@@ -63,7 +63,11 @@ function makeWindow(htmlFile, hash) {
  * rendering jsdom can't do anyway.
  */
 function installFakeLeaflet(w) {
-  class FakeLayer { addTo(map) { map.layers.push(this); return this; } }
+  class FakeLayer {
+    addTo(map) { map.layers.push(this); return this; }
+    on(evt, fn) { (this._handlers ||= {})[evt] = fn; return this; }
+    fire(evt) { this._handlers?.[evt]?.(); return this; }
+  }
   class FakeMarker {
     constructor(latlng) { this.latlng = latlng; this.popupContent = null; this._handlers = {}; this.opened = false; }
     addTo(map) { map.markers.push(this); return this; }
@@ -75,18 +79,28 @@ function installFakeLeaflet(w) {
     getLatLng() { return Array.isArray(this.latlng) ? { lat: this.latlng[0], lng: this.latlng[1] } : this.latlng; }
     fire(evt) { this._handlers[evt]?.(); }
   }
-  class FakeBounds { constructor(pts) { this.pts = pts; } pad() { return this; } }
+  class FakeBounds {
+    constructor(pts) { this.pts = pts; }
+    pad() { return this; }
+    getSouth() { return 39; } getWest() { return -99; } getNorth() { return 42; } getEast() { return -95; }
+  }
   class FakeMap {
     constructor(container, opts) { this.container = container; this.opts = opts; this.layers = []; this.markers = []; this.controls = []; this.view = null; w.__leafletMaps.push(this); }
     setView(latlng, zoom) { this.view = { latlng, zoom }; return this; }
     fitBounds(bounds) { this.view = { bounds }; return this; }
     addControl(c) { this.controls.push(c); c.onAdd?.(this); return this; }
+    on(evt, fn) { for (const e of String(evt).split(' ')) (this._handlers ||= {})[e] = fn; return this; }
+    getBounds() { return new FakeBounds([]); }
+    eachLayer() {}
+    removeLayer() {}
+    fire(evt, payload) { this._handlers?.[evt]?.(payload); return this; }
     invalidateSize() {}
   }
   w.__leafletMaps = [];
   w.L = {
     map: (container, opts) => new FakeMap(container, opts),
     tileLayer: () => new FakeLayer(),
+    layerGroup: (layers) => { const g = new FakeLayer(); g.children = layers; return g; },
     control: {
       layers: () => new FakeLayer(),
       zoom: (opts) => { const l = new FakeLayer(); l.controlOpts = opts; l.addTo = (map) => { map.controls.push(l); return l; }; return l; },
@@ -201,6 +215,8 @@ async function main() {
   check('Bigfoot listing is labelled community reported', /Community reported/i.test(cryptid));
   check('Bigfoot listing marks its facts as unconfirmed', /not independently confirmed/i.test(cryptid));
   check('Bigfoot listing carries a Before you go block', /Before you go/i.test(cryptid));
+  check('Bigfoot listing tells the story behind the site', /The story/i.test(cryptid) && /Reports began in 1971/i.test(cryptid));
+  check('Lore is labelled as folklore, not fact', /not established fact/i.test(cryptid));
   check('Before you go tells solo visitors to bring someone', /at least one other person/i.test(cryptid));
   check('Before you go repeats that check-ins are not monitored', /not an emergency service/i.test(cryptid));
 
@@ -234,6 +250,39 @@ async function main() {
           JSON.stringify(mapInstance.controls.map((c) => c.options?.position)));
     check('Map is pannable and pinch-zoomable, not a fixed image',
           mapInstance.opts.dragging === true && mapInstance.opts.touchZoom === true);
+    check('Map screen offers a Search this area control', !!w.document.querySelector('.search-area'));
+    check('Map screen carries a symbol legend', !!w.document.querySelector('.legend'));
+    {
+      const legend = w.document.querySelector('.legend');
+      check('Legend explains the UFO and cryptid symbols',
+            /UFO & Sky Watching/i.test(legend.textContent) && /Cryptids/i.test(legend.textContent));
+      check('Legend names restricted pins as awareness-only',
+            /never as an invitation/i.test(legend.textContent));
+      check('Location count never renders as undefined',
+            !/undefined/.test(w.document.querySelector('.results').textContent));
+    }
+    check('Map and results share one responsive container', !!w.document.querySelector('.map-split .results'));
+    {
+      // Four failed tiles is a blocked provider, not a blip: the app should
+      // say so rather than leaving a grey void.
+      // The roads basemap is a group (base tiles + a labels layer), so find
+      // whichever layer actually registered a tileerror handler.
+      const candidates = mapInstance.layers.flatMap((l) => [l, ...(l.children || [])]);
+      const roadLayer = candidates.find((l) => l._handlers?.tileerror);
+      for (let i = 0; i < 3; i++) roadLayer.fire('tileerror');
+      check('A single tile hiccup does not cry wolf', !w.document.querySelector('.tile-error'));
+      roadLayer.fire('tileerror');
+      const banner = w.document.querySelector('.tile-error');
+      check('Repeated tile failures produce an explanation', !!banner);
+      check('Tile failure message blames the blocker, not the user\'s data',
+            /content blocker or network filter/i.test(banner?.textContent || ''));
+      check('Tile failure offers a way out', /Try another layer/i.test(banner?.textContent || ''));
+    }
+    check('Search this area stays hidden until the user actually pans',
+          w.document.querySelector('.search-area')?.classList.contains('hide') === true);
+    check('Dark roads basemap is not double-inverted',
+          !mapInstance.container.classList.contains('tiles-invert'),
+          mapInstance.container.className);
     check('Pins carry a street address or town, not bare coordinates',
           apiPins.every((p) => p.address_short === null || typeof p.address_short === 'string')
           && apiPins.some((p) => /,/.test(p.address_short || '')));

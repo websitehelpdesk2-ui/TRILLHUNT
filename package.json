@@ -12,7 +12,9 @@
     "seed": "node scripts/seed.ts",
     "seed:reset": "node scripts/seed.ts --reset",
     "test": "node tests/run.ts",
-    "test:ui": "node tests/ui-smoke.mjs"
+    "test:ui": "node tests/ui-smoke.mjs",
+    "import:rec": "node scripts/import-recreation-gov.ts",
+    "test:import": "node tests/import-mapping.mjs"
   },
   "description": "THRILLHUNT \u2014 18+ adventure & horror discovery platform (zero-dependency Node/TypeScript MVP)"
 }

@@ -262,6 +262,56 @@ async function main() {
       check('Ordinary logistics talk is not caught by the trespass filter', ok2.data.message.pending === false);
     }
 
+    // ---- nationwide coverage + viewport search -----------------------------
+    {
+      const all = await free.get('/api/map');
+      const states = new Set(all.data.pins.map((p: any) => String(p.address_short || '').split(', ').pop()));
+      check('Map covers more than one corner of the country', states.size >= 8, `${states.size} states`);
+      check('Map reports a total count', typeof all.data.total === 'number' && all.data.total === all.data.pins.length);
+
+      const sw = await free.get('/api/map?bbox=31,-118,37,-102');
+      check('Viewport search narrows to the panned area', sw.data.bbox_search === true && sw.data.total < all.data.total);
+      check('Viewport search returns only locations inside the box',
+            sw.data.pins.every((p: any) => p.lat >= 31 && p.lat <= 37 && p.lng >= -118 && p.lng <= -102),
+            JSON.stringify(sw.data.pins.map((p: any) => [p.lat, p.lng])));
+
+      const arctic = await free.get('/api/map?bbox=60,-160,70,-140');
+      check('An empty viewport returns nothing rather than falling back to everything', arctic.data.total === 0);
+
+      const bad = await free.get('/api/map?bbox=notanumber');
+      check('A malformed bbox is ignored, not fatal', bad.status === 200 && bad.data.bbox_search === false);
+    }
+
+    // ---- pin categories, legend data and site lore -------------------------
+    {
+      const pins = (await free.get('/api/map')).data.pins;
+      const byCat = (c: string) => pins.filter((p: any) => p.category === c);
+      check('UFO sites get their own pin category, not a generic one', byCat('ufo-sightings').length >= 2,
+            JSON.stringify(pins.map((p: any) => p.category)));
+      check('Cryptid sites get their own pin category', byCat('cryptids').length >= 1);
+      check('Bike trails get their own pin category', byCat('bike-trails').length >= 2);
+      check('A specific category always beats a generic one on the pin',
+            !pins.some((p: any) => p.category === 'outdoor-adventures' && p.categories.includes('bike-trails')));
+      check('Pins expose every category so a legend can be built', pins.every((p: any) => Array.isArray(p.categories)));
+
+      const cats = (await free.get('/api/bootstrap')).data.categories;
+      check('Legend source lists UFO and cryptid categories',
+            cats.some((c: any) => c.slug === 'ufo-sightings') && cats.some((c: any) => c.slug === 'cryptids'));
+      check('Every category carries an icon for the legend', cats.every((c: any) => !!c.icon));
+
+      const cryptid = await free.get('/api/locations/cutler-bend-cryptid-corridor');
+      check('Site carries its legend and history', typeof cryptid.data.location.lore === 'string' && cryptid.data.location.lore.length > 80);
+      check('Lore states plainly where evidence is absent', /no physical evidence/i.test(cryptid.data.location.lore));
+
+      const sanatorium = await free.get('/api/locations/the-larkin-sanatorium-closed-do-not-enter');
+      check('Lore corrects the popular myth rather than repeating it',
+            /does not match county health records|real figure is far lower/i.test(sanatorium.data.location.lore));
+
+      const sky = await free.get('/api/locations/route-12-sky-watch-pullout');
+      check('UFO lore names the documented explanation alongside the legend',
+            /air corridor|military exercise/i.test(sky.data.location.lore));
+    }
+
     // signed url must be viewer-bound
     const other = new Client();
     const otherReg = await other.post('/api/auth/register', { email: 'peeker@test.dev', password: 'LongEnoughPass1', username: 'peeker', age_confirmed: true, accept_tos: true });
@@ -291,7 +341,8 @@ async function main() {
     check('Public profile exposes no email or coordinates', !JSON.stringify(profile.data).match(/email|home_lat|home_lng/));
 
     // ============================================ 9. RESTRICTED LOCATIONS
-    const restricted = (await free.get('/api/explore?within=3000')).data.results.find((r: any) => r.access_policy === 'private_closed');
+    const pages = await Promise.all([0, 1, 2].map((n) => free.get(`/api/explore?within=3000&page=${n}`)));
+    const restricted = pages.flatMap((p) => p.data.results).find((r: any) => r.access_policy === 'private_closed');
     check('Restricted listing is present and clearly labelled', !!restricted && restricted.data_source === 'restricted');
     const goRestricted = await free.post(`/api/locations/${restricted.slug}/attendance`, { status: 'going', going_date: '2026-10-31' });
     check('Marking "I\'m Going" to a closed property is refused', goRestricted.status === 400 && goRestricted.data.code === 'restricted_location');

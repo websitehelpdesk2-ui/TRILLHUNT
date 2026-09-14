@@ -75,7 +75,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // API keys are never sent to the client regardless, so there is
       // nothing for a compromised CDN script to steal here.
       "default-src 'self'; " +
-      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.tile.opentopomap.org; " +
+      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.tile.opentopomap.org " +
+      "https://*.basemaps.cartocdn.com https://server.arcgisonline.com; " +
       "style-src 'self' 'unsafe-inline' https://unpkg.com; " +
       "script-src 'self' https://unpkg.com; connect-src 'self'; " +
       "frame-ancestors 'none'; base-uri 'self'; form-action 'self'");

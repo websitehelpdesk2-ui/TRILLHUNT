@@ -216,7 +216,41 @@ types, signed-URL TTL), AI daily caps, the enforcement ladder, chat limits and d
 Price changes take effect immediately in the app, the checkout page and the API. Nothing in a feature
 file contains a price.
 
-## 6. What is mocked, and what production needs
+## 6. Getting real data in
+
+The seeded locations are **fictional** and flagged `is_demo`. They exist to
+exercise the app, not to be visited. Real coverage comes from four places, and
+the first one is available right now:
+
+**Federal recreation data (implemented).** `scripts/import-recreation-gov.ts`
+pulls real campgrounds, trailheads and facilities from RIDB — the public API
+behind Recreation.gov, covering NPS, USFS, BLM, USACE and Fish & Wildlife.
+Free key from https://ridb.recreation.gov/profile.
+
+```bash
+node tests/import-mapping.mjs                       # offline, no key needed
+RIDB_API_KEY=xxx node scripts/import-recreation-gov.ts --state=IA --dry-run
+RIDB_API_KEY=xxx node scripts/import-recreation-gov.ts --state=IA,NE --limit=300
+```
+
+Imported records keep their real names, coordinates, addresses, phone numbers
+and reservation links, are marked `data_source: 'verified'`, and are deduplicated
+on `external_source` + `external_id` so re-running updates rather than duplicates.
+**Safety fields are left NULL on purpose** — the app then shows "Information
+unavailable" instead of a fabricated hazard note. Fill them in through the admin
+dashboard as they are confirmed.
+
+The mapping is unit-tested offline against a fixture; the live API calls are
+**not** exercised by tests, because the build environment has no network access
+to RIDB. Run the `--dry-run` first.
+
+**The other three:** operator self-service claims (haunted attractions want to
+be found), user submissions through the existing `community` + moderation path,
+and state/NPS open data. Commercial POI providers like Google Places are usually
+the wrong answer for a listings product — their terms restrict caching and
+displaying POI data outside a Google map.
+
+## 7. What is mocked, and what production needs
 
 | Area | In this build | To go live |
 | --- | --- | --- |
@@ -230,7 +264,7 @@ file contains a price.
 | Age verification | Self-attestation, recorded with timestamp and text | If your counsel requires it, add a third-party age-estimation or ID check at the payment or upload boundary. |
 | Video | Not implemented | Needs a transcoding pipeline and frame-level moderation. |
 
-## 7. Security notes
+## 8. Security notes
 
 - Session token never leaves the server in readable form (SHA-256 stored); CSRF token is a separate readable cookie compared with a per-session secret.
 - Every state-changing route requires the CSRF header; `requireWrite` also blocks suspended, banned and restricted accounts.
@@ -245,7 +279,7 @@ file contains a price.
 structured logging with PII redaction, rotate `APP_SECRET`, add account lockout and email
 verification, and commission a penetration test.
 
-## 8. Privacy
+## 9. Privacy
 
 Exact user coordinates are never returned to another user. Distances are bucketed server-side
 ("Less than 1 mile away", "3 miles away", "20 miles away") before serialization. Home coordinates
@@ -254,7 +288,7 @@ stripped at upload. Users control profile visibility, DM policy, nearby discover
 visibility, activity visibility and coarse-location sharing. Emergency contacts and trip plans are
 private. Blocked users disappear from chat. The map plots locations only — never people.
 
-## 9. Legal review required
+## 10. Legal review required
 
 Terms of Service, Privacy Policy (plus state/GDPR disclosures), the 18+ verification approach,
 subscription and auto-renewal terms, refund policy, liability waivers and assumption-of-risk language,
@@ -262,7 +296,7 @@ the user-content licence, DMCA agent registration, business-listing terms, and t
 reporting programme all require qualified counsel before any public launch. The copy in this build is
 placeholder drafting, not legal advice.
 
-## 10. Known limitations
+## 11. Known limitations
 
 Polling instead of websockets in chat; no offline mode; the map is schematic rather than tiled;
 search is keyword + category matching, not semantic; no image thumbnails or CDN; no email delivery;
@@ -270,7 +304,7 @@ SQLite means single-writer concurrency; moderation and AI mocks are deterministi
 accessibility has been built to a reasonable floor (focus rings, reduced-motion, labelled controls,
 non-colour-only status) but has not been audited with a screen reader.
 
-## 11. Next
+## 12. Next
 
 **Next features:** trail conditions crowdsourced per ride, sighting-report logging with timestamps
 and weather so patterns are visible without claiming causation, real-time chat, business self-serve dashboard, event ticketing affiliates,

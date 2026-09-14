@@ -276,14 +276,18 @@ textarea { min-height: 110px; resize: vertical; }
 
 .mapwrap { position: relative; height: 58vh; border-radius: var(--radius-m); overflow: hidden; border: 1px solid var(--ink-300); background: #0a0a0d; }
 .mapwrap .leaflet-container { width: 100%; height: 100%; background: #0a0a0d; font-family: var(--font-body); }
+.search-area { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 500; box-shadow: 0 6px 18px rgba(0,0,0,.55); }
 .maphint { position: absolute; left: 10px; bottom: 10px; z-index: 500; font-size: .7rem; color: var(--smoke); background: rgba(7,7,8,.8); padding: 5px 9px; border-radius: 999px; pointer-events: none; }
 
 .minimap { position: relative; height: 190px; border-radius: var(--radius-m); overflow: hidden; border: 1px solid var(--ink-300); margin: 4px 0 0; }
 .minimap .leaflet-container { width: 100%; height: 100%; background: #0a0a0d; }
 
-/* Dark-mode tiles: invert the raster imagery only. Markers, popups and controls
-   live in separate Leaflet panes and are untouched by this filter. */
-.leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.65); }
+/* Tile tone is per-layer, not global: the roads basemap is already dark, so
+   inverting it would wreck it. Only light-styled raster layers get the filter,
+   and satellite imagery never does. Markers, popups and controls live in
+   separate Leaflet panes and are untouched either way. */
+.tiles-invert .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.65); }
+.tiles-plain .leaflet-tile-pane { filter: brightness(.86) contrast(1.02); }
 .leaflet-container { background: #0a0a0d; }
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--ink-100); color: var(--bone); box-shadow: 0 8px 24px rgba(0,0,0,.5); }
 .leaflet-popup-content { margin: 10px 13px; font-size: .85rem; line-height: 1.4; }
@@ -319,3 +323,80 @@ table.admin tr:hover td { background: var(--ink-050); }
 .stat .n { font-family: var(--font-display); font-size: 1.7rem; font-weight: 800; }
 .stat .l { font-size: .74rem; color: var(--ash); }
 .stat.alert { border-color: #5b2526; }
+
+
+/* ============================================================== DESKTOP
+   The app is mobile-first and stays that way — the phone layout is the
+   product. On a wide screen the same components get more room rather than a
+   different design: a roomier column, side-by-side map and results, and a
+   navigation rail instead of a thumb bar that would sit absurdly far from
+   the content. Nothing here changes behaviour, only proportions. */
+
+.tile-error {
+  margin: 10px 0 0; padding: 14px; border-radius: var(--radius-m);
+  border: 1px solid #5b2526; background: #1a0c0d; color: #e8c9c9; font-size: .86rem;
+}
+.tile-error strong { display: block; margin-bottom: 6px; color: #f7d9d9; }
+.tile-error p { margin: 0 0 10px; }
+
+@media (min-width: 900px) {
+  :root { --shell: min(1080px, 100%); --pad: 28px; }
+
+  body { padding-bottom: 0; }
+
+  /* Bottom tab bar becomes a left rail: bottom-anchored navigation on a
+     desktop monitor is a phone habit applied where it makes no sense. */
+  .tabbar {
+    top: 0; bottom: 0; right: auto; width: 96px;
+    border-top: 0; border-right: 1px solid var(--ink-300);
+    display: flex; align-items: center;
+  }
+  .tabbar .inner {
+    grid-template-columns: 1fr; width: 100%; gap: 6px; padding: 0 8px;
+  }
+  .tabbar button { padding: 14px 0; font-size: .72rem; border-radius: var(--radius-m); }
+  .tabbar button:hover { background: var(--ink-100); }
+  .tabbar button[aria-current='page'] { background: var(--ink-100); }
+
+  .topbar .inner, .shell { padding-left: calc(96px + var(--pad)); }
+  .shell { padding-bottom: 60px; }
+
+  /* Two columns where a list sits beside a map or a form. */
+  .mapwrap { height: 68vh; }
+  .minimap { height: 260px; }
+
+  /* Cards breathe: three across instead of one tall stack. */
+  .hscroll > * { flex: 0 0 300px; }
+
+  .composer { left: 96px; bottom: 0; }
+  .composer .inner { padding-left: 0; }
+
+  .sheet { border-radius: var(--radius-l); margin-bottom: 6vh; }
+  .sheet-bg { align-items: center; }
+}
+
+@media (min-width: 1280px) {
+  :root { --shell: min(1200px, 100%); }
+  /* Map screen goes side-by-side: map fixed, results scroll beside it. */
+  .map-split { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
+  .map-split .mapwrap { height: 74vh; position: sticky; top: 76px; }
+  .map-split .results { max-height: 74vh; overflow-y: auto; padding-right: 4px; }
+}
+
+
+/* ---------------------------------------------------------------- legend */
+.legend { border: 1px solid var(--ink-300); border-radius: var(--radius-m); background: var(--ink-050); margin-bottom: 12px; }
+.legend summary { cursor: pointer; padding: 11px 14px; font-size: .86rem; font-weight: 600; list-style: none; }
+.legend summary::-webkit-details-marker { display: none; }
+.legend summary::after { content: '▾'; float: right; color: var(--smoke); }
+.legend[open] summary::after { content: '▴'; }
+.legend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 14px 4px; }
+.legend-item { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--ash); }
+.legend-item .ico { font-size: 1.1rem; }
+.legend-note { margin: 4px 14px 14px; font-size: .76rem; color: var(--smoke); }
+
+/* ------------------------------------------------------------ site lore */
+.lore { border-left: 3px solid var(--ember-dim); padding-left: 14px; }
+.lore .kicker { font-size: .7rem; letter-spacing: .12em; color: var(--ember); margin-bottom: 6px; }
+.lore p { margin: 0 0 10px; font-size: .92rem; }
+.lore .caveat { font-size: .78rem; color: var(--smoke); font-style: italic; margin: 0; }

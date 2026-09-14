@@ -376,22 +376,39 @@ route(/^\/map(?:\?(.*))?$/, async (qs) => {
     }))));
 
   const mapDiv = el('div', { style: 'height:100%;width:100%' });
-  const holder = el('div', { class: 'mapwrap' }, [mapDiv, el('div', { class: 'maphint', text: 'Location pins only — hunters are never plotted' })]);
-  wrap.append(holder);
+  const searchHere = el('button', { class: 'btn btn-primary btn-sm search-area hide', text: '🔍  Search this area' });
+  const holder = el('div', { class: 'mapwrap' }, [
+    mapDiv, searchHere,
+    el('div', { class: 'maphint', text: 'Location pins only — hunters are never plotted' }),
+  ]);
+  const count = el('small', { style: 'display:block;margin-bottom:8px', text: `${d.total ?? d.pins.length} locations` });
+  // Legend: the pins are emoji, which are only obvious once you already know
+  // what they mean. Every category the map can draw is listed here.
+  const legend = el('details', { class: 'legend' }, [
+    el('summary', { text: '🗺️  What the symbols mean' }),
+    el('div', { class: 'legend-grid' }, (state.bootstrap?.categories ?? []).map((c) =>
+      el('div', { class: 'legend-item' }, [
+        el('span', { class: 'ico', text: iconFor(c.slug) }),
+        el('span', { text: c.name }),
+      ]))),
+    el('p', { class: 'legend-note', text: 'A dimmed pin is a restricted or closed property — listed for awareness, never as an invitation.' }),
+  ]);
   const list = el('div', { class: 'stack' });
-  wrap.append(list);
+  // On a wide screen these sit side by side; on a phone they stack, which is
+  // exactly what the same markup does without the grid.
+  wrap.append(el('div', { class: 'map-split' }, [
+    holder,
+    el('div', { class: 'results' }, [count, legend, list]),
+  ]));
 
-  requestAnimationFrame(() => {
-    initLeafletMap(mapDiv, { pins: d.pins, center: d.center, focusSlug: focus, onPick: (p) => go(`#/l/${p.slug}`) });
-  });
-
-  if (!d.pins.length) {
-    list.append(empty('🗺️', 'No locations in the database yet',
-      filter === 'nearby'
-        ? 'Run "node scripts/seed.ts --reset" on the server, then reload.'
-        : 'Nothing matches this filter. Try Nearby instead.'));
-  } else {
-    list.append(...d.pins.slice(0, 12).map((p) => el('button', { class: 'tile', onclick: () => go(`#/map?filter=${filter}&focus=${p.slug}`) }, [
+  const paintList = (pins) => {
+    list.innerHTML = '';
+    if (!pins.length) {
+      list.append(empty('🗺️', 'Nothing here yet',
+        'No THRILLHUNT locations in this part of the map. Pan somewhere else, or zoom out and search again.'));
+      return;
+    }
+    list.append(...pins.slice(0, 12).map((p) => el('button', { class: 'tile', onclick: () => go(`#/map?filter=${filter}&focus=${p.slug}`) }, [
       el('div', { class: 'row between' }, [
         el('div', { class: 'grow' }, [
           el('h3', { text: `${iconFor(p.category)} ${p.name}` }),
@@ -400,7 +417,40 @@ route(/^\/map(?:\?(.*))?$/, async (qs) => {
         el('span', { class: 'chip', text: `★ ${p.rating_avg || '—'}` }),
       ]),
     ])));
-  }
+  };
+
+  requestAnimationFrame(() => {
+    const map = initLeafletMap(mapDiv, { pins: d.pins, center: d.center, focusSlug: focus, onPick: (p) => go(`#/l/${p.slug}`) });
+    if (!map) return;
+
+    // Panning is a question: "what's over here?" Answer it on request rather
+    // than firing a query on every drag.
+    let settled = false;
+    map.on('moveend zoomend', () => {
+      if (!settled) { settled = true; return; }   // ignore the initial fit
+      searchHere.classList.remove('hide');
+    });
+    setTimeout(() => { settled = true; }, 800);
+
+    searchHere.addEventListener('click', async () => {
+      searchHere.disabled = true;
+      searchHere.textContent = 'Searching…';
+      try {
+        const b = map.getBounds();
+        const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map((n) => n.toFixed(4)).join(',');
+        const fresh = await api.get(`/api/map?filter=${filter}&bbox=${bbox}&${coordQuery()}`);
+        map.eachLayer((layer) => { if (layer.getLatLng && layer.options?.icon) map.removeLayer(layer); });
+        for (const p of fresh.pins) addMapPin(map, p, (pin) => go(`#/l/${pin.slug}`));
+        count.textContent = `${fresh.total ?? fresh.pins.length} locations in view`;
+        paintList(fresh.pins);
+        searchHere.classList.add('hide');
+      } catch (e) { handleError(e); }
+      searchHere.disabled = false;
+      searchHere.textContent = '🔍  Search this area';
+    });
+  });
+
+  paintList(d.pins);
   return wrap;
 });
 
@@ -419,6 +469,26 @@ const iconFor = (c) => ICONS[c] || '📍';
  * @param opts.focusSlug  if set, zoom straight to that pin and open its popup
  * @param opts.onPick  called with the pin object when a marker is clicked
  */
+/**
+ * One place that knows how a THRILLHUNT pin looks and what its popup says, so
+ * the first render and a later "search this area" can never drift apart.
+ */
+function addMapPin(map, p, onPick, single = false) {
+  const icon = L.divIcon({
+    className: '', html: `<div class="th-pin${single ? ' center' : ''}">${iconFor(p.category)}</div>`,
+    iconSize: [26, 26], iconAnchor: [13, 22], popupAnchor: [0, -20],
+  });
+  const marker = L.marker([p.lat, p.lng], { icon }).addTo(map);
+  const bits = [`<strong>${esc(p.name)}</strong>`];
+  if (p.address_short) bits.push(esc(p.address_short));
+  if (p.distance_label) bits.push(esc(p.distance_label));
+  if (p.rating_avg) bits.push(`★ ${esc(String(p.rating_avg))}`);
+  if (p.approximate) bits.push('<em>Approximate location — confirm the exact meeting point</em>');
+  marker.bindPopup(bits.join('<br>'));
+  if (onPick) marker.on('click', () => onPick(p));
+  return marker;
+}
+
 function initLeafletMap(container, { pins = [], center = null, zoom = 12, single = false, focusSlug = null, onPick = null } = {}) {
   if (typeof L === 'undefined') {
     container.parentElement?.append(el('p', { style: 'padding:14px;color:var(--ash);font-size:.85rem', text: 'Map library failed to load — check your connection and reload.' }));
@@ -437,30 +507,72 @@ function initLeafletMap(container, { pins = [], center = null, zoom = 12, single
   });
   if (!single) L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+  // OpenStreetMap's own tile servers refuse traffic from apps that don't meet
+  // their usage policy (you get 403 "Access blocked" images back, not tiles).
+  // CARTO publish OSM-derived basemaps that are free to use and — usefully —
+  // ship a genuinely dark style, so we get road detail without inverting
+  // anything. Terrain stays on OpenTopoMap, which does serve us.
+  // Roads: Esri's dark canvas basemap, drawn as base + a separate labels layer
+  // (that's how Esri ships it). Same host as the satellite layer, so one CSP
+  // entry covers both. OpenStreetMap's own servers refuse our traffic, and
+  // CARTO moved their free basemaps behind an API key — both were tried.
+  const streetsBase = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16, attribution: 'Tiles &copy; Esri, &copy; OpenStreetMap contributors',
   });
+  const streetsLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16, pane: 'shadowPane',
+  });
+  const streets = L.layerGroup([streetsBase, streetsLabels]);
   const terrain = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
     maxZoom: 17, attribution: 'Map: &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), data &copy; OpenStreetMap contributors, SRTM',
   });
+  const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics',
+  });
+
+  // Only the light-styled layers need inverting to sit in a dark UI. CARTO's
+  // dark basemap and satellite imagery are left exactly as published —
+  // inverting satellite imagery makes it unreadable.
+  const setTileTone = (layer) => {
+    container.classList.toggle('tiles-invert', layer === terrain);
+    container.classList.toggle('tiles-plain', layer === satellite);
+  };
   streets.addTo(map);
-  if (!single) L.control.layers({ 'Streets': streets, 'Terrain': terrain }, {}, { position: 'topright' }).addTo(map);
+  setTileTone(streets);
+  map.on('baselayerchange', (e) => { setTileTone(e.layer); tileTrouble.reset(); });
+
+  // Tiles are third-party images. A content blocker, a corporate proxy, or a
+  // provider refusing our traffic all look identical from here: the requests
+  // just fail. Rather than leaving a grey void, say what happened and give
+  // the person something to try — this is the difference between "the app is
+  // broken" and "something in the way is blocking map imagery".
+  const tileTrouble = {
+    errors: 0, warned: false, banner: null,
+    reset() { this.errors = 0; this.warned = false; this.banner?.remove(); this.banner = null; },
+    note(layerName) {
+      if (this.warned || ++this.errors < 4) return;
+      this.warned = true;
+      this.banner = el('div', { class: 'tile-error' }, [
+        el('strong', { text: 'Map imagery is not loading' }),
+        el('p', { text: `Requests for ${layerName} tiles are failing. This is usually a content blocker or network filter between you and the tile provider, not a problem with your data — everything else on this page is working.` }),
+        el('div', { class: 'row wrap' }, [
+          el('button', { class: 'btn btn-ghost btn-sm', text: 'Try another layer', onclick: () => { map.removeLayer(streets); terrain.addTo(map); setTileTone(terrain); this.reset(); } }),
+          el('button', { class: 'btn btn-ghost btn-sm', text: 'Dismiss', onclick: () => this.reset() }),
+        ]),
+      ]);
+      container.parentElement?.append(this.banner);
+    },
+  };
+  streetsBase.on('tileerror', () => tileTrouble.note('road'));
+  terrain.on('tileerror', () => tileTrouble.note('terrain'));
+  satellite.on('tileerror', () => tileTrouble.note('satellite'));
+
+  if (!single) L.control.layers({ 'Roads': streets, 'Terrain': terrain, 'Satellite': satellite }, {}, { position: 'topright' }).addTo(map);
 
   const valid = pins.filter((p) => p.lat != null && p.lng != null);
   const placed = [];
   for (const p of valid) {
-    const icon = L.divIcon({
-      className: '', html: `<div class="th-pin${single ? ' center' : ''}">${iconFor(p.category)}</div>`,
-      iconSize: [26, 26], iconAnchor: [13, 22], popupAnchor: [0, -20],
-    });
-    const marker = L.marker([p.lat, p.lng], { icon }).addTo(map);
-    const bits = [`<strong>${esc(p.name)}</strong>`];
-    if (p.address_short) bits.push(esc(p.address_short));
-    if (p.distance_label) bits.push(esc(p.distance_label));
-    if (p.rating_avg) bits.push(`★ ${esc(String(p.rating_avg))}`);
-    if (p.approximate) bits.push('<em>Approximate location — confirm the exact meeting point</em>');
-    marker.bindPopup(bits.join('<br>'));
-    if (onPick) marker.on('click', () => onPick(p));
+    const marker = addMapPin(map, p, onPick, single);
     placed.push({ pin: p, marker });
     if (focusSlug && p.slug === focusSlug) {
       map.setView([p.lat, p.lng], 14);
@@ -501,10 +613,20 @@ function initLeafletMap(container, { pins = [], center = null, zoom = 12, single
             (pos) => {
               btn.classList.remove('busy');
               const here = [pos.coords.latitude, pos.coords.longitude];
-              map.setView(here, Math.max(map.getZoom(), 11));
-              L.circleMarker(here, { radius: 7, color: '#ff5a1f', fillColor: '#ff5a1f', fillOpacity: .9, weight: 2 })
-                .addTo(map)
-                .bindPopup('You are here — this dot is drawn on your device and is never sent to THRILLHUNT or shown to other hunters.');
+              // accuracy is in metres. A browser with no GPS falls back to an
+              // IP lookup, which can be off by an entire continent — over a
+              // proxy or VPN it routinely is. Zooming confidently into the
+              // wrong country is worse than admitting we don't know.
+              const metres = pos.coords.accuracy ?? Infinity;
+              const vague = metres > 50000;
+              map.setView(here, vague ? 6 : Math.max(map.getZoom(), 11));
+              L.circleMarker(here, {
+                radius: vague ? 10 : 7, color: '#ff5a1f', fillColor: '#ff5a1f',
+                fillOpacity: vague ? .35 : .9, weight: 2, dashArray: vague ? '4 3' : null,
+              }).addTo(map).bindPopup(vague
+                ? 'Rough position only — your browser estimated this from your network, not GPS, so it can be wildly off. Pan to where you actually are and tap “Search this area”.'
+                : 'You are here — this dot is drawn on your device and is never sent to THRILLHUNT or shown to other hunters.');
+              if (vague) toast('Your browser could only estimate your location from the network — pan the map instead', 'bad');
             },
             () => { btn.classList.remove('busy'); toast('Could not get your location'); },
             { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 },
@@ -592,6 +714,17 @@ route(/^\/l\/([\w-]+)$/, async (slug) => {
   if (loc.description) {
     wrap.append(sectionHead('About'));
     wrap.append(el('div', { class: 'card' }, [el('p', { style: 'margin:0', text: loc.description })]));
+  }
+
+  if (loc.lore) {
+    wrap.append(sectionHead('The story'));
+    wrap.append(el('div', { class: 'card' }, [
+      el('div', { class: 'lore' }, [
+        el('div', { class: 'kicker', text: 'LOCAL LEGEND & REPORTED PHENOMENA' }),
+        el('p', { text: loc.lore }),
+        el('p', { class: 'caveat', text: 'Folklore and visitor reports, not established fact. Where the record contradicts the legend, we say so.' }),
+      ]),
+    ]));
   }
 
   wrap.append(sectionHead('Know before you go'));

@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS locations (
   name               TEXT NOT NULL,
   tagline            TEXT,
   description        TEXT,
+  -- The story people actually came for: local legend, reported phenomena,
+  -- documented history. Kept separate from `description` so the UI can label
+  -- it as folklore rather than letting it read as established fact.
+  lore               TEXT,
   -- §3 provenance: every record is explicitly one of these.
   data_source        TEXT NOT NULL DEFAULT 'community'
                        CHECK (data_source IN ('verified','community','restricted')),

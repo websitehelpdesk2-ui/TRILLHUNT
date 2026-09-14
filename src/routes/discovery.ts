@@ -188,10 +188,33 @@ route('GET', '/api/search', ({ ctx, query }) => {
   };
 });
 
+
+/** Most distinctive category first — the generic ones are fallbacks, not labels. */
+const CATEGORY_PRIORITY = [
+  'cryptids', 'ufo-sightings', 'haunted-attractions', 'halloween-events', 'paranormal',
+  'horror-experiences', 'bike-trails', 'camping', 'night-adventures', 'remote-adventures',
+  'road-trips', 'hiking', 'outdoor-adventures', 'hidden-gems',
+];
+function primaryCategory(catSlugs: string | null | undefined): string {
+  const slugs = String(catSlugs ?? '').split(',').filter(Boolean);
+  for (const want of CATEGORY_PRIORITY) if (slugs.includes(want)) return want;
+  return slugs[0] ?? 'hidden-gems';
+}
+
 route('GET', '/api/map', ({ ctx, query }) => {
   const o = origin(ctx, query);
   const filter = query.get('filter') ?? 'nearby';
   let rows = withDistance(all<any>(LOC_SELECT + ' AND l.lat IS NOT NULL'), o);
+
+  // Viewport search. The map is free to roam the whole country, so "what is
+  // near me" can't be the only question it answers — panning to another state
+  // and asking what's there is the normal way people use a map.
+  const bbox = (query.get('bbox') ?? '').split(',').map(Number);
+  const hasBbox = bbox.length === 4 && bbox.every((n) => Number.isFinite(n));
+  if (hasBbox) {
+    const [minLat, minLng, maxLat, maxLng] = bbox;
+    rows = rows.filter((r) => r.lat >= minLat && r.lat <= maxLat && r.lng >= minLng && r.lng <= maxLng);
+  }
   if (filter === 'trending') rows = rows.filter((r) => r.trending_score > 40);
   if (filter === 'open_now') rows = rows.filter((r) => !!r.hours_json);
   if (filter === 'weekend') {
@@ -206,7 +229,11 @@ route('GET', '/api/map', ({ ctx, query }) => {
     // Pins are location pins only. No user positions are ever returned (§9).
     pins: rows.slice(0, 300).map((r) => ({
       id: r.id, slug: r.slug, name: r.name, lat: r.lat, lng: r.lng,
-      category: String(r.cat_slugs ?? '').split(',')[0] ?? 'hidden-gems',
+      // group_concat returns categories in no guaranteed order, so a UFO site
+      // could end up drawn as a generic outdoor pin. Pick the most specific
+      // category the listing has — that is the one the icon should show.
+      category: primaryCategory(r.cat_slugs),
+      categories: String(r.cat_slugs ?? '').split(',').filter(Boolean),
       data_source: r.data_source, access_policy: r.access_policy,
       rating_avg: r.rating_avg, fear: r.fear,
       distance_label: r.miles == null ? null : coarseDistance(r.miles),
@@ -219,6 +246,8 @@ route('GET', '/api/map', ({ ctx, query }) => {
       approximate: r.address_precision !== 'exact' || !r.address_line,
     })),
     center: o.lat != null ? { lat: o.lat, lng: o.lng } : null,
+    total: rows.length,
+    bbox_search: hasBbox,
   };
 });
 
@@ -366,6 +395,7 @@ route('GET', '/api/locations/:slug', ({ ctx, params, query }) => {
       description: r.description,
       website_url: r.website_url, phone: r.phone,
       reservation_url: r.reservation_url,
+      lore: r.lore ?? null,
       hours: r.hours_json ? JSON.parse(r.hours_json) : null,
       hours_display: r.hours_json ? (JSON.parse(r.hours_json).note ?? 'See official hours') : UNKNOWN_INFO,
       price_text: r.price_text ?? UNKNOWN_INFO,

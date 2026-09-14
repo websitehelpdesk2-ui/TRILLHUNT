@@ -10,8 +10,23 @@ mkdirSync(dirname(config.dbFile), { recursive: true });
 export const db = new DatabaseSync(config.dbFile);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
+/**
+ * Columns added after a database was first created. SQLite has no
+ * "ADD COLUMN IF NOT EXISTS", and an existing install should not have to be
+ * wiped to pick up a new field — so check the table and add what's missing.
+ */
+function addColumnIfMissing(table: string, column: string, ddl: string) {
+  const cols = all<any>(`PRAGMA table_info(${table})`).map((c: any) => c.name);
+  if (!cols.includes(column)) run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
 export function migrate() {
   db.exec(readFileSync(join(ROOT, 'db', 'schema.sql'), 'utf8'));
+  // --- incremental columns -------------------------------------------
+  addColumnIfMissing('locations', 'lore', 'lore TEXT');
+  addColumnIfMissing('locations', 'external_source', 'external_source TEXT');
+  addColumnIfMissing('locations', 'external_id', 'external_id TEXT');
+
 }
 
 type Row = Record<string, any>;
