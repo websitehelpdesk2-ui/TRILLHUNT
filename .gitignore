@@ -5,3 +5,6 @@
 node_modules/
 package-lock.json
 storage/
+db/*.db
+db/*.db-shm
+db/*.db-wal
