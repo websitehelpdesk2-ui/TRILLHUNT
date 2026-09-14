@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>THRILLHUNT — Admin</title>
+<link rel="stylesheet" href="/css/theme.css">
+<style>
+  :root { --shell: min(1100px, 100%); }
+  .adminbar { border-bottom: 1px solid var(--ink-300); position: sticky; top: 0; z-index: 30; background: rgba(7,7,8,.94); backdrop-filter: blur(12px); }
+  .adminbar .inner { width: var(--shell); margin: 0 auto; padding: 12px var(--pad); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .adminbar nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  .adminbar nav button { background: none; border: 1px solid transparent; color: var(--ash); font: inherit; font-size: .86rem; padding: 7px 12px; border-radius: 999px; cursor: pointer; }
+  .adminbar nav button[aria-current='page'] { color: var(--bone); border-color: var(--ink-400); background: var(--ink-100); }
+  body { padding-bottom: 60px; }
+</style>
+</head>
+<body>
+<header class="adminbar">
+  <div class="inner">
+    <a class="brand" href="/app" style="color:inherit">THRILL<em>HUNT</em> <span style="font-size:.7rem;color:var(--ash);letter-spacing:.1em">ADMIN</span></a>
+    <nav id="adminnav">
+      <button data-view="overview">Safety Center</button>
+      <button data-view="cases">Moderation</button>
+      <button data-view="media">Image queue</button>
+      <button data-view="safety">Safety reports</button>
+      <button data-view="users">Users</button>
+      <button data-view="locations">Locations</button>
+      <button data-view="appeals">Appeals</button>
+      <button data-view="businesses">Businesses</button>
+      <button data-view="config">Configuration</button>
+      <button data-view="audit">Audit log</button>
+    </nav>
+  </div>
+</header>
+<main class="shell" id="view" style="padding-top:16px"></main>
+<script type="module" src="/js/admin.js"></script>
+</body>
+</html>

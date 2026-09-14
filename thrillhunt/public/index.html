@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>THRILLHUNT — Chase the thrill. Respect the risk.</title>
+<meta name="description" content="Find haunted attractions, remote camping, night adventures and adrenaline experiences near you — then find the people who want to go. 18+ only.">
+<link rel="stylesheet" href="/css/theme.css">
+<style>
+  .hero { padding: 64px 0 30px; }
+  .hero h1 { margin-bottom: 14px; }
+  .hero .tag { font-family: var(--font-display); font-weight: 800; font-size: .9rem; letter-spacing: .18em; color: var(--ember); margin-bottom: 18px; }
+  .hero p.lede { font-size: 1.05rem; color: var(--ash); }
+  .marquee { border-top: 1px solid var(--ink-300); border-bottom: 1px solid var(--ink-300); padding: 12px 0; margin: 28px 0; overflow: hidden; }
+  .marquee .track { display: flex; gap: 28px; white-space: nowrap; font-family: var(--font-display); font-weight: 800; font-size: .95rem; letter-spacing: .04em; color: var(--smoke); animation: slide 26s linear infinite; }
+  @keyframes slide { to { transform: translateX(-50%); } }
+  @media (prefers-reduced-motion: reduce) { .marquee .track { animation: none; } }
+  .feature { border-top: 1px solid var(--ink-300); padding: 22px 0; display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+  .feature .ico { font-size: 1.5rem; }
+  .feature h3 { margin-bottom: 4px; }
+  .feature p { color: var(--ash); font-size: .92rem; margin: 0; }
+  .agebox { border: 1px solid var(--ember-dim); background: #1a0d06; border-radius: var(--radius-m); padding: 18px; margin: 26px 0; }
+  .agebox .n { font-family: var(--font-display); font-weight: 800; font-size: 1.3rem; color: var(--ember); letter-spacing: .06em; }
+  footer { border-top: 1px solid var(--ink-300); margin-top: 36px; padding: 22px 0 60px; color: var(--smoke); font-size: .82rem; }
+  footer a { color: var(--ash); }
+</style>
+</head>
+<body>
+<main class="shell">
+  <section class="hero">
+    <div class="brand" style="margin-bottom:40px">THRILL<em>HUNT</em></div>
+    <p class="tag">CHASE THE THRILL. RESPECT THE RISK.</p>
+    <h1>Find the places that scare you. Find the people crazy enough to go.</h1>
+    <p class="lede">Haunted attractions, remote campsites, night trails and adrenaline experiences near you — with real access rules, real safety information, and a group chat for everyone else going Saturday.</p>
+    <div class="row wrap" style="margin-top:22px">
+      <a class="btn btn-primary" href="/app#/join">Join the hunt</a>
+      <a class="btn btn-ghost" href="/app#/explore">Look around first</a>
+    </div>
+  </section>
+
+  <div class="marquee" aria-hidden="true">
+    <div class="track">
+      <span>👻 HAUNTED ATTRACTIONS</span><span>🏕️ REMOTE CAMPING</span><span>🔦 PARANORMAL</span><span>🌙 NIGHT HIKES</span><span>🚗 ROAD TRIPS</span><span>🧭 HIDDEN GEMS</span>
+      <span>👻 HAUNTED ATTRACTIONS</span><span>🏕️ REMOTE CAMPING</span><span>🔦 PARANORMAL</span><span>🌙 NIGHT HIKES</span><span>🚗 ROAD TRIPS</span><span>🧭 HIDDEN GEMS</span>
+    </div>
+  </div>
+
+  <section>
+    <div class="feature"><div class="ico">🧭</div><div><h3>Discover</h3><p>Find experiences you didn't know existed, sorted by how far you'll drive and how much you can take.</p></div></div>
+    <div class="feature"><div class="ico">💬</div><div><h3>Find your people</h3><p>Every location has a chat. See who's going which night, then spin up a private group in one tap.</p></div></div>
+    <div class="feature"><div class="ico">🤖</div><div><h3>Plan your thrill</h3><p>Describe the night you want. We build the run from real listings — and tell you plainly when something can't be verified.</p></div></div>
+    <div class="feature"><div class="ico">🩸</div><div><h3>Share the aftermath</h3><p>File a Thrill Report, rate the fear, earn XP and badges, and send the card to whoever doubted you.</p></div></div>
+    <div class="feature"><div class="ico">🛡️</div><div><h3>Safety first</h3><p>Every listing shows access rules, known hazards and operating status. Where we don't know, we say so instead of guessing.</p></div></div>
+  </section>
+
+  <section class="agebox">
+    <div class="n">18+ ONLY</div>
+    <p style="margin:8px 0 0;font-size:.9rem;color:var(--ash)">THRILLHUNT connects adults with haunted attractions, outdoor adventures, camping destinations and other adrenaline-focused experiences. Some activities and locations involve inherent risks. You're responsible for deciding whether an activity is right for you and for following all applicable laws, property rules, posted warnings and safety requirements.</p>
+  </section>
+
+  <section class="card">
+    <h3>What THRILLHUNT will never do</h3>
+    <p style="font-size:.9rem;color:var(--ash);margin:0">Help anyone trespass, enter closed or restricted property, bypass security, or ignore posted warnings. Restricted places are listed only so people stop asking how to get in — and we point them at the legal, guided alternative instead.</p>
+  </section>
+
+  <footer>
+    <div class="row wrap" style="gap:16px">
+      <a href="/app#/guidelines">Community Guidelines</a>
+      <a href="/app#/safety">Safety</a>
+      <a href="/admin">Admin</a>
+    </div>
+    <p style="margin-top:14px">THRILLHUNT is a discovery and community platform. It is not a safety authority, an emergency service, a guarantee of any location's safety or legality, or a substitute for official property information or professional guides. In an emergency, contact your local emergency services.</p>
+    <p>Demo build — Terms of Service, Privacy Policy, age-verification procedures and subscription terms require review by qualified counsel before any public launch.</p>
+  </footer>
+</main>
+</body>
+</html>

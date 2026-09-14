@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070708">
+<title>THRILLHUNT</title>
+<link rel="stylesheet" href="/css/theme.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="inner">
+    <a class="brand" href="#/home" style="color:inherit">THRILL<em>HUNT</em></a>
+    <div class="grow"></div>
+    <button class="iconbtn" style="width:38px;height:38px;font-size:.95rem" aria-label="Notifications" onclick="location.hash='#/notifications'">🔔</button>
+    <button class="iconbtn" style="width:38px;height:38px;font-size:.95rem" aria-label="Messages" onclick="location.hash='#/chats'">💬</button>
+  </div>
+</header>
+
+<main class="shell" id="view" aria-live="polite"></main>
+
+<nav class="tabbar" id="tabbar" aria-label="Primary">
+  <div class="inner">
+    <button data-tab="home"><span class="ico" aria-hidden="true">🏠</span>Home</button>
+    <button data-tab="explore"><span class="ico" aria-hidden="true">🧭</span>Explore</button>
+    <button data-tab="map"><span class="ico" aria-hidden="true">🗺️</span>Map</button>
+    <button data-tab="groups"><span class="ico" aria-hidden="true">👥</span>Groups</button>
+    <button data-tab="profile"><span class="ico" aria-hidden="true">🎯</span>Profile</button>
+  </div>
+</nav>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

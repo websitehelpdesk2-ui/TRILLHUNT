@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout — THRILLHUNT PRO</title>
+<link rel="stylesheet" href="/css/theme.css">
+<style>:root { --shell: min(460px, 100%); } body { display: grid; place-items: center; min-height: 100vh; }</style>
+</head>
+<body>
+<main class="shell" style="padding-bottom:40px">
+  <div class="card" style="border-color:#4a3b86;background:linear-gradient(180deg,#1c1633,#120f22)">
+    <span class="chip pro">SANDBOX PAYMENT PROVIDER</span>
+    <h1 style="font-size:1.7rem;margin:14px 0 6px">THRILLHUNT PRO</h1>
+    <p id="price" style="color:var(--ash);margin:0">Loading plan…</p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h3>This is not a real payment page</h3>
+    <p style="font-size:.9rem;color:var(--ash);margin:0">
+      In production this step happens on the payment provider's own hosted page. THRILLHUNT never sees or stores card
+      details — it only receives a signed webhook confirming the subscription. This sandbox page reproduces that flow:
+      pressing the button below posts a signed reference back through the same webhook path a real provider would use.
+    </p>
+  </div>
+
+  <div class="stack" style="margin-top:14px">
+    <button class="btn btn-pro btn-block" id="pay">Complete sandbox payment</button>
+    <button class="btn btn-ghost btn-block" id="fail">Simulate a declined payment</button>
+    <a class="btn btn-ghost btn-block" href="/app#/pro">Cancel and go back</a>
+  </div>
+  <p id="msg" style="margin-top:14px;font-size:.9rem" role="status"></p>
+</main>
+
+<script type="module">
+  const p = new URLSearchParams(location.search);
+  const msg = document.getElementById('msg');
+  const cookie = (k) => document.cookie.split('; ').find((c) => c.startsWith(k + '='))?.split('=')[1] ?? '';
+
+  fetch('/api/bootstrap').then((r) => r.json()).then((b) => {
+    const fmt = new Intl.NumberFormat(undefined, { style: 'currency', currency: b.plan.currency.toUpperCase() });
+    document.getElementById('price').textContent = `${fmt.format(b.plan.price_cents / 100)} per ${b.plan.interval} · cancel anytime`;
+  });
+
+  document.getElementById('pay').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    msg.textContent = 'Contacting payment provider…';
+    try {
+      const res = await fetch('/api/mock/checkout/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-th-csrf': cookie('th_csrf') },
+        body: JSON.stringify({ ref: p.get('ref'), user_id: p.get('u'), sig: p.get('sig') }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Payment could not be completed.');
+      msg.textContent = 'Subscription active. Sending you back…';
+      setTimeout(() => { location.href = '/app#/pro'; }, 900);
+    } catch (err) {
+      msg.textContent = err.message;
+      e.target.disabled = false;
+    }
+  });
+
+  document.getElementById('fail').addEventListener('click', () => {
+    msg.textContent = 'Payment declined by the sandbox provider. Nothing was charged and no entitlement was granted.';
+  });
+</script>
+</body>
+</html>

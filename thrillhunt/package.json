@@ -1,0 +1,18 @@
+{
+  "name": "thrillhunt",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node src/server.ts",
+    "seed": "node scripts/seed.ts",
+    "seed:reset": "node scripts/seed.ts --reset",
+    "test": "node tests/run.ts",
+    "test:ui": "node tests/ui-smoke.mjs"
+  },
+  "description": "THRILLHUNT \u2014 18+ adventure & horror discovery platform (zero-dependency Node/TypeScript MVP)"
+}
