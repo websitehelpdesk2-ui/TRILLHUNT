@@ -4,11 +4,12 @@
 *Find the places that scare you. Find the people crazy enough to go.*
 
 An 18+ social discovery platform for haunted attractions, paranormal locations, remote camping,
-night hikes, road trips and other adrenaline experiences — with a real safety layer, a group-forming
-layer, and a paid tier that gates image uploads server-side.
+bike trails, Bigfoot and cryptid country, UFO sky-watch hotspots, night hikes, road trips and other
+adrenaline experiences — with a real safety layer, a group-forming layer, and a paid tier that gates
+image uploads server-side.
 
 This is a working MVP, not a mockup. It boots, seeds, serves a mobile-first app, an admin dashboard
-and a marketing site, and passes 120 automated checks (69 backend, 51 UI).
+and a marketing site, and passes 163 automated checks (99 backend, 64 UI).
 
 ---
 
@@ -61,8 +62,8 @@ Group invite code for the seeded crew: **HOLLOW42**.
 ### Tests
 
 ```bash
-node tests/run.ts        # 69 backend/security assertions, boots a throwaway server + DB
-npm i --no-save jsdom tough-cookie && node tests/ui-smoke.mjs   # 51 UI assertions (server must be running)
+node tests/run.ts        # 99 backend/security assertions, boots a throwaway server + DB
+npm i --no-save jsdom tough-cookie && node tests/ui-smoke.mjs   # 64 UI assertions (server must be running)
 ```
 
 The UI test is the only thing in the repo that needs packages, and they are deliberately not project
@@ -79,6 +80,37 @@ the attestation text and timestamp are stored on the user row. Scrypt password h
 sessions (only a SHA-256 of the token is stored), CSRF double-submit on every state-changing request,
 per-IP rate limits.
 
+**Subjects.** Fifteen categories: haunted attractions, Halloween events, paranormal, camping,
+remote adventures, night adventures, hiking, **bike trails**, **cryptids & Bigfoot**,
+**UFO & sky watching**, road trips, horror experiences, outdoor adventures, hidden gems and trending.
+Bike listings carry the facts that actually decide a ride (surface, grade, closures, lights-after-dark,
+water). Sighting-driven listings — Bigfoot corridors, UFO pullouts — lead with a *What is actually
+known* field stating plainly that no sighting there has been verified, and name the mundane
+explanations (aircraft, satellites, Starlink, deer, loose cattle) alongside the folklore. The app
+lists these places because people search for them, never asserts a cryptid or craft exists, and the
+AI planner will not promise an encounter.
+
+**Credibility layer.** Every known fact on a listing carries its provenance next to it — *Confirmed
+with the operator or property* vs *Reported by hunters — not independently confirmed* — and unknown
+facts carry no attribution at all, because an unsourced claim reads as checked when it isn't. Each
+listing states how many of its facts are actually on file, when it was last confirmed, and when that
+confirmation has gone stale (over 180 days: *"Last confirmed 14 months ago. Hours and prices drift —
+check the official source."*). Two or more open safety flags surface on the listing itself rather
+than only in the admin queue.
+
+**Pre-departure block.** A *Before you go* section derived only from data actually held: expect to
+lose signal, don't go alone, bring a real headlamp, no confirmed emergency access route. An unknown
+is treated as a signal in its own right rather than silence. It is deliberately suppressed for
+staffed, ticketed venues with a verified operator — firing wilderness warnings at a scream park
+trains people to skip the block, which is how warnings stop working where they matter. Committing to
+a date at a remote or thin-coverage site prompts a trip check-in at that moment, with the copy
+repeating that THRILLHUNT does not monitor check-ins and cannot send help.
+
+**Anti-trespass coordination filter.** Beyond the how-to rules, chat messages that coordinate a way
+into somewhere off-limits ("hop the fence", "security leaves at", "back way in", "park down the road
+and walk in", "cameras are fake") are held for a human before publication rather than published and
+cleaned up afterwards. Ordinary logistics talk is not caught; both directions are tested.
+
 **Discovery.** Home (trending, events, who's going, mystery drop, recommendations), Explore with
 category + sort + filters, natural-language search with visible interpretation, a schematic pin map,
 and a location page carrying thrill metrics, KNOW BEFORE YOU GO, the THRILL WARNING, official links,
@@ -87,7 +119,10 @@ events, reviews and Thrill Reports.
 **Safety layer.** Every listing is labelled VERIFIED / COMMUNITY REPORTED / RESTRICTED and carries a
 🟢🟡🟠🔴 indicator that is never colour-only. Unknown fields render
 *"Information unavailable. Verify directly with the official operator or property owner."* — the app
-has no code path that invents hours, prices, access rules or safety facts. Restricted/closed property
+has no code path that invents hours, prices, access rules or safety facts. A core set of safety
+fields always renders (so a gap is visible as a gap), and subject-specific facts — trail surface,
+wildlife, hunting season, roadside parking, evidence status — are appended only when they are known,
+so a haunted house never shows six blank rows about tyre choice. Restricted/closed property
 (`access_policy = private_closed`) refuses attendance, refuses group creation, is never returned by
 the AI planner or a mystery drop, and points the user at legal guided alternatives instead.
 
@@ -237,7 +272,8 @@ non-colour-only status) but has not been audited with a screen reader.
 
 ## 11. Next
 
-**Next features:** real-time chat, business self-serve dashboard, event ticketing affiliates,
+**Next features:** trail conditions crowdsourced per ride, sighting-report logging with timestamps
+and weather so patterns are visible without claiming causation, real-time chat, business self-serve dashboard, event ticketing affiliates,
 seasonal leaderboards, photo albums per adventure, carpool coordination, iOS/Android wrappers.
 
 **Launch:** one metro (Omaha/Lincoln) in August, six weeks before Halloween. Seed 150 verified
