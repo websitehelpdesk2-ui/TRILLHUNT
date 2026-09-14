@@ -42,21 +42,71 @@ function makeWindow(htmlFile, hash) {
   const w = dom.window;
   w.scrollTo = () => {};
   w.fetch = jarFetch;
-  w.HTMLCanvasElement.prototype.getContext = () => ({
-    scale() {}, fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
-    arc() {}, fill() {}, fillText() {}, set font(v) {}, set fillStyle(v) {}, set strokeStyle(v) {}, set lineWidth(v) {}, set textAlign(v) {},
-  });
   w.navigator.geolocation = { getCurrentPosition: (ok) => ok({ coords: { latitude: 41.2565, longitude: -95.9345 } }) };
   Object.defineProperty(w.document, 'cookie', {
     get() { return jar.getCookieStringSync(BASE); },
     set(v) { jar.setCookieSync(v, BASE); },
     configurable: true,
   });
+  installFakeLeaflet(w);
   return { dom, w };
 }
 
+/**
+ * A minimal stand-in for the real Leaflet library (loaded from unpkg in the
+ * browser, which jsdom does not fetch). It implements just enough of the API
+ * surface that public/js/app.js's initLeafletMap() calls — L.map, tileLayer,
+ * control.layers, marker, divIcon, latLngBounds, Control.extend, DomUtil,
+ * DomEvent — so this test exercises our own code (does it create the right
+ * number of markers, does clicking one navigate, does ?focus zoom to the
+ * right pin) without depending on real tile network requests or canvas/SVG
+ * rendering jsdom can't do anyway.
+ */
+function installFakeLeaflet(w) {
+  class FakeLayer { addTo(map) { map.layers.push(this); return this; } }
+  class FakeMarker {
+    constructor(latlng) { this.latlng = latlng; this.popupContent = null; this._handlers = {}; this.opened = false; }
+    addTo(map) { map.markers.push(this); return this; }
+    bindPopup(html) { this.popupContent = html; return this; }
+    on(evt, fn) { this._handlers[evt] = fn; return this; }
+    openPopup() { this.opened = true; return this; }
+    // Real Leaflet hands back a LatLng object, not the array you passed in.
+    // The stub has to match, or assertions on .lat silently compare undefined.
+    getLatLng() { return Array.isArray(this.latlng) ? { lat: this.latlng[0], lng: this.latlng[1] } : this.latlng; }
+    fire(evt) { this._handlers[evt]?.(); }
+  }
+  class FakeBounds { constructor(pts) { this.pts = pts; } pad() { return this; } }
+  class FakeMap {
+    constructor(container, opts) { this.container = container; this.opts = opts; this.layers = []; this.markers = []; this.controls = []; this.view = null; w.__leafletMaps.push(this); }
+    setView(latlng, zoom) { this.view = { latlng, zoom }; return this; }
+    fitBounds(bounds) { this.view = { bounds }; return this; }
+    addControl(c) { this.controls.push(c); c.onAdd?.(this); return this; }
+    invalidateSize() {}
+  }
+  w.__leafletMaps = [];
+  w.L = {
+    map: (container, opts) => new FakeMap(container, opts),
+    tileLayer: () => new FakeLayer(),
+    control: {
+      layers: () => new FakeLayer(),
+      zoom: (opts) => { const l = new FakeLayer(); l.controlOpts = opts; l.addTo = (map) => { map.controls.push(l); return l; }; return l; },
+    },
+    marker: (latlng) => new FakeMarker(latlng),
+    divIcon: (opts) => opts,
+    latLngBounds: (pts) => new FakeBounds(pts),
+    Control: {
+      extend: (def) => class {
+        constructor(opts) { this.options = { ...def.options, ...opts }; }
+        onAdd(map) { return def.onAdd.call(this, map); }
+      },
+    },
+    DomUtil: { create: (tag) => w.document.createElement(tag) },
+    DomEvent: { disableClickPropagation: () => {}, on: (elm, evt, fn) => elm.addEventListener(evt, fn), stop: () => {} },
+  };
+}
+
 async function installGlobals(w) {
-  for (const k of ['window', 'document', 'navigator', 'location', 'history', 'HTMLElement', 'Node', 'Event', 'CustomEvent', 'getComputedStyle', 'requestAnimationFrame', 'Headers', 'Blob', 'FileReader', 'Intl']) {
+  for (const k of ['window', 'document', 'navigator', 'location', 'history', 'HTMLElement', 'Node', 'Event', 'CustomEvent', 'getComputedStyle', 'requestAnimationFrame', 'Headers', 'Blob', 'FileReader', 'Intl', 'L']) {
     if (w[k] === undefined) continue;
     try { Object.defineProperty(globalThis, k, { value: w[k], configurable: true, writable: true }); }
     catch { /* read-only global (navigator on newer Node) — patched below */ }
@@ -123,19 +173,87 @@ async function main() {
   check('Location page offers I\'M GOING and JOIN GROUP', loc.includes("I'M GOING") && loc.includes('JOIN GROUP'));
   check('Location page marks the listing as verified', loc.includes('Verified listing'));
   check('Location page exposes a safety-issue report', /Report safety issue/i.test(loc));
+  check('Location page shows the physical address up top', loc.includes('County Road'));
+  check('Location page renders a real mini-map, not a placeholder', w.__leafletMaps.length >= 1);
+  {
+    const mini = w.__leafletMaps.at(-1);
+    check('Mini-map is centered on this location\'s real coordinates', mini.markers.length === 1 && Math.abs(mini.markers[0].getLatLng().lat - 41.5439) < 0.001);
+    check('Mini-map has no layer switcher / zoom clutter (single mode)', mini.opts.zoomControl === false);
+  }
 
   await goTo('#/l/the-larkin-sanatorium-closed-do-not-enter', 900);
   const larkin = text();
   check('Restricted property is labelled as restricted', /Restricted — do not enter|ENTRY IS NOT PERMITTED/.test(larkin));
   check('Restricted property hides the going/group actions', !larkin.includes("I'M GOING"));
   check('Restricted property points at a legal alternative', /legal, guided alternative/i.test(larkin));
+  check('Restricted property still states its address (awareness, not access)', /📍/.test(larkin));
 
   await goTo('#/l/cottonwood-hollow-campground', 900);
   check('Unknown fields say information is unavailable, never a guess',
     /Information unavailable/i.test(text()), text().slice(0, 0));
 
+  check('Location page shows how fresh the information is', /Confirmed|Needs re-checking|facts on file/i.test(loc));
+
+  await goTo('#/l/cutler-bend-cryptid-corridor', 900);
+  const cryptid = text();
+  check('Bigfoot listing leads with what is actually known', /what is actually known/i.test(cryptid));
+  check('Bigfoot listing says no sighting has been verified', /ever been verified/i.test(cryptid));
+  check('Bigfoot listing is labelled community reported', /Community reported/i.test(cryptid));
+  check('Bigfoot listing marks its facts as unconfirmed', /not independently confirmed/i.test(cryptid));
+  check('Bigfoot listing carries a Before you go block', /Before you go/i.test(cryptid));
+  check('Before you go tells solo visitors to bring someone', /at least one other person/i.test(cryptid));
+  check('Before you go repeats that check-ins are not monitored', /not an emergency service/i.test(cryptid));
+
+  await goTo('#/l/route-12-sky-watch-pullout', 900);
+  check('UFO listing names the mundane explanations', /Aircraft, satellites/i.test(text()));
+
+  await goTo('#/l/steel-rail-trail-loess-bluff-segment', 900);
+  const bike = text();
+  check('Bike trail shows surface and status, not just vibes', /trail surface/i.test(bike) && /trail status/i.test(bike));
+  check('Bike trail is navigable like any other listing', bike.includes('NAVIGATE'));
+
+  await goTo('#/explore?category=cryptids', 900);
+  check('Cryptids is a browsable category', /Cutler Bend/.test(text()));
+
+  await goTo('#/search/bike%20trails', 900);
+  check('Searching bike trails returns rides', /Rail Trail|Singletrack/i.test(text()));
+
   await goTo('#/map', 900);
   check('Map states that hunters are never plotted', w.document.body.textContent.includes('hunters are never plotted'));
+  check('Map uses the real Leaflet layer, not a canvas placeholder', w.__leafletMaps.length >= 1);
+  {
+    const apiPins = (await (await jarFetch('/api/map?filter=nearby')).json()).pins;
+    const mapInstance = w.__leafletMaps.at(-1);
+    check('Every location pin got a real marker on the map', mapInstance.markers.length === apiPins.filter((p) => p.lat != null).length,
+          `${mapInstance.markers.length} markers vs ${apiPins.length} pins`);
+    const zoomCtl = mapInstance.controls.find((c) => c.controlOpts?.position);
+    check('Zoom buttons render bottom-right, in thumb reach', zoomCtl?.controlOpts.position === 'bottomright',
+          JSON.stringify(mapInstance.controls.map((c) => c.controlOpts?.position ?? c.options?.position)));
+    check('Locate control renders bottom-right too',
+          mapInstance.controls.some((c) => c.options?.position === 'bottomright'),
+          JSON.stringify(mapInstance.controls.map((c) => c.options?.position)));
+    check('Map is pannable and pinch-zoomable, not a fixed image',
+          mapInstance.opts.dragging === true && mapInstance.opts.touchZoom === true);
+    check('Pins carry a street address or town, not bare coordinates',
+          apiPins.every((p) => p.address_short === null || typeof p.address_short === 'string')
+          && apiPins.some((p) => /,/.test(p.address_short || '')));
+
+    // Clicking a marker should route to that location's page, same as tapping
+    // its card in the list below the map.
+    const target = apiPins.find((p) => p.lat != null);
+    const marker = mapInstance.markers.find((m) => Math.abs(m.getLatLng().lat - target.lat) < 0.0001);
+    marker?.fire('click');
+    await wait(400);
+    check('Clicking a map marker opens that location', w.location.hash.includes(`/l/${target.slug}`));
+  }
+
+  await goTo(`#/map?filter=nearby&focus=hollow-creek-haunted-woods`, 900);
+  {
+    const focused = w.__leafletMaps.at(-1);
+    check('?focus= deep link zooms straight to that pin', focused.view?.zoom === 14);
+    const openedMarker = focused.markers.find((m) => m.opened);
+    check('?focus= opens that pin\'s popup', !!openedMarker);
+  }
 
   await goTo('#/groups');
   check('Groups lists the seeded crew', text().includes('Saturday Hollow Creek Crew'));

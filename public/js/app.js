@@ -1,5 +1,5 @@
 import { api, state, refreshSession, coordQuery, requestLocation, ApiError } from './api.js';
-import { el, esc, toast, sheet, confirmSheet, sourceChip, meters, safetyPlacard, thrillWarning, empty, skeletons, fmtDate, fmtTime, money } from './ui.js';
+import { el, esc, toast, sheet, confirmSheet, sourceChip, meters, safetyPlacard, thrillWarning, credibilityLine, beforeYouGo, empty, skeletons, fmtDate, fmtTime, money } from './ui.js';
 import { NavigationService, platform } from './nav-service.js';
 
 const view = document.getElementById('view');
@@ -365,6 +365,7 @@ route(/^\/search\/(.+)$/, async (q) => {
 route(/^\/map(?:\?(.*))?$/, async (qs) => {
   const params = new URLSearchParams(qs || '');
   const filter = params.get('filter') || 'nearby';
+  const focus = params.get('focus') || null;
   const d = await api.get(`/api/map?filter=${filter}&${coordQuery()}`);
   const wrap = el('div', { class: 'stack' }, [el('h2', { style: 'margin-top:16px', text: 'Map' })]);
 
@@ -374,90 +375,181 @@ route(/^\/map(?:\?(.*))?$/, async (qs) => {
       text: label, onclick: () => go(`#/map?filter=${k}`),
     }))));
 
-  const canvas = el('canvas');
-  const holder = el('div', { class: 'mapwrap' }, [canvas, el('div', { class: 'maphint', text: 'Location pins only — hunters are never plotted' })]);
+  const mapDiv = el('div', { style: 'height:100%;width:100%' });
+  const holder = el('div', { class: 'mapwrap' }, [mapDiv, el('div', { class: 'maphint', text: 'Location pins only — hunters are never plotted' })]);
   wrap.append(holder);
   const list = el('div', { class: 'stack' });
   wrap.append(list);
 
-  requestAnimationFrame(() => drawMap(canvas, d, (pin) => go(`#/l/${pin.slug}`)));
-  list.append(...d.pins.slice(0, 12).map((p) => el('button', { class: 'tile', onclick: () => go(`#/l/${p.slug}`) }, [
-    el('div', { class: 'row between' }, [
-      el('div', { class: 'grow' }, [el('h3', { text: `${iconFor(p.category)} ${p.name}` }), el('div', { class: 'meta', text: p.distance_label || `${p.lat.toFixed(2)}, ${p.lng.toFixed(2)}` })]),
-      el('span', { class: 'chip', text: `★ ${p.rating_avg || '—'}` }),
-    ]),
-  ])));
+  requestAnimationFrame(() => {
+    initLeafletMap(mapDiv, { pins: d.pins, center: d.center, focusSlug: focus, onPick: (p) => go(`#/l/${p.slug}`) });
+  });
+
+  if (!d.pins.length) {
+    list.append(empty('🗺️', 'No locations in the database yet',
+      filter === 'nearby'
+        ? 'Run "node scripts/seed.ts --reset" on the server, then reload.'
+        : 'Nothing matches this filter. Try Nearby instead.'));
+  } else {
+    list.append(...d.pins.slice(0, 12).map((p) => el('button', { class: 'tile', onclick: () => go(`#/map?filter=${filter}&focus=${p.slug}`) }, [
+      el('div', { class: 'row between' }, [
+        el('div', { class: 'grow' }, [
+          el('h3', { text: `${iconFor(p.category)} ${p.name}` }),
+          el('div', { class: 'meta', text: [p.address_short, p.distance_label].filter(Boolean).join(' · ') || `${p.lat.toFixed(2)}, ${p.lng.toFixed(2)}` }),
+        ]),
+        el('span', { class: 'chip', text: `★ ${p.rating_avg || '—'}` }),
+      ]),
+    ])));
+  }
   return wrap;
 });
 
-const ICONS = { 'haunted-attractions': '👻', 'halloween-events': '🎃', paranormal: '🔦', camping: '🏕️', 'remote-adventures': '🌲', 'night-adventures': '🌙', hiking: '🥾', 'road-trips': '🚗', 'horror-experiences': '🧟', 'outdoor-adventures': '🔥', 'hidden-gems': '🧭' };
+const ICONS = { 'bike-trails': '🚵', cryptids: '🐾', 'ufo-sightings': '🛸', 'haunted-attractions': '👻', 'halloween-events': '🎃', paranormal: '🔦', camping: '🏕️', 'remote-adventures': '🌲', 'night-adventures': '🌙', hiking: '🥾', 'road-trips': '🚗', 'horror-experiences': '🧟', 'outdoor-adventures': '🔥', 'hidden-gems': '🧭' };
 const iconFor = (c) => ICONS[c] || '📍';
 
-/** Schematic pin map. Real tiles require a maps provider key (see README). */
-function drawMap(canvas, data, onPick) {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  const pins = data.pins.filter((p) => p.lat != null);
-  if (!pins.length) return;
-  const lats = pins.map((p) => p.lat), lngs = pins.map((p) => p.lng);
-  const pad = 0.35;
-  let minLat = Math.min(...lats) - pad, maxLat = Math.max(...lats) + pad;
-  let minLng = Math.min(...lngs) - pad, maxLng = Math.max(...lngs) + pad;
-  const project = (p) => ({
-    x: ((p.lng - minLng) / (maxLng - minLng)) * rect.width,
-    y: rect.height - ((p.lat - minLat) / (maxLat - minLat)) * rect.height,
+/**
+ * Real, pannable, zoomable map — Leaflet + OpenStreetMap (streets) with an
+ * OpenTopoMap terrain layer toggle. Not Google Maps: that needs a billed API
+ * key this build doesn't have (see README §6). Works anywhere in the US (or
+ * the world) since it's real tiles, not a bounding box drawn around pins.
+ *
+ * @param container   an element already attached to the DOM
+ * @param pins        [{lat,lng,name,category,slug,rating_avg?,distance_label?,approximate?}]
+ * @param opts.single  true for a one-pin, non-interactive-feeling mini map (no layer switcher)
+ * @param opts.focusSlug  if set, zoom straight to that pin and open its popup
+ * @param opts.onPick  called with the pin object when a marker is clicked
+ */
+function initLeafletMap(container, { pins = [], center = null, zoom = 12, single = false, focusSlug = null, onPick = null } = {}) {
+  if (typeof L === 'undefined') {
+    container.parentElement?.append(el('p', { style: 'padding:14px;color:var(--ash);font-size:.85rem', text: 'Map library failed to load — check your connection and reload.' }));
+    return null;
+  }
+  const map = L.map(container, {
+    // One finger drags, two fingers pinch. Controls sit bottom-right, within
+    // thumb reach on a phone and clear of the layer switcher.
+    zoomControl: false,
+    attributionControl: true,
+    dragging: true,
+    touchZoom: true,
+    scrollWheelZoom: !single,
+    doubleClickZoom: true,
+    tap: true,
   });
+  if (!single) L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  ctx.fillStyle = '#0a0a0d'; ctx.fillRect(0, 0, rect.width, rect.height);
-  ctx.strokeStyle = '#17171d'; ctx.lineWidth = 1;
-  for (let i = 1; i < 8; i++) {
-    ctx.beginPath(); ctx.moveTo((rect.width / 8) * i, 0); ctx.lineTo((rect.width / 8) * i, rect.height); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, (rect.height / 8) * i); ctx.lineTo(rect.width, (rect.height / 8) * i); ctx.stroke();
+  const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+  });
+  const terrain = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    maxZoom: 17, attribution: 'Map: &copy; <a href="https://opentopomap.org" target="_blank" rel="noopener">OpenTopoMap</a> (CC-BY-SA), data &copy; OpenStreetMap contributors, SRTM',
+  });
+  streets.addTo(map);
+  if (!single) L.control.layers({ 'Streets': streets, 'Terrain': terrain }, {}, { position: 'topright' }).addTo(map);
+
+  const valid = pins.filter((p) => p.lat != null && p.lng != null);
+  const placed = [];
+  for (const p of valid) {
+    const icon = L.divIcon({
+      className: '', html: `<div class="th-pin${single ? ' center' : ''}">${iconFor(p.category)}</div>`,
+      iconSize: [26, 26], iconAnchor: [13, 22], popupAnchor: [0, -20],
+    });
+    const marker = L.marker([p.lat, p.lng], { icon }).addTo(map);
+    const bits = [`<strong>${esc(p.name)}</strong>`];
+    if (p.address_short) bits.push(esc(p.address_short));
+    if (p.distance_label) bits.push(esc(p.distance_label));
+    if (p.rating_avg) bits.push(`★ ${esc(String(p.rating_avg))}`);
+    if (p.approximate) bits.push('<em>Approximate location — confirm the exact meeting point</em>');
+    marker.bindPopup(bits.join('<br>'));
+    if (onPick) marker.on('click', () => onPick(p));
+    placed.push({ pin: p, marker });
+    if (focusSlug && p.slug === focusSlug) {
+      map.setView([p.lat, p.lng], 14);
+      marker.openPopup();
+    }
   }
-  if (data.center) {
-    const c = project(data.center);
-    ctx.fillStyle = 'rgba(255,90,31,.14)';
-    ctx.beginPath(); ctx.arc(c.x, c.y, 26, 0, 7); ctx.fill();
-    ctx.fillStyle = '#ff5a1f';
-    ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, 7); ctx.fill();
+
+  if (!focusSlug) {
+    if (placed.length > 1) {
+      map.fitBounds(L.latLngBounds(placed.map((x) => x.marker.getLatLng())).pad(0.25));
+    } else if (placed.length === 1) {
+      map.setView(placed[0].marker.getLatLng(), zoom);
+    } else if (center) {
+      map.setView([center.lat, center.lng], 9);
+    } else {
+      // No pins, no known user location: default to a continental-US view.
+      // Because these are real tiles, the person can freely pan/zoom from
+      // here to anywhere in the country (or beyond) — this is a starting
+      // point, not a boundary.
+      map.setView([39.5, -98.35], 4);
+    }
   }
-  const spots = [];
-  for (const p of pins) {
-    const { x, y } = project(p);
-    spots.push({ x, y, p });
-    ctx.font = '18px serif'; ctx.textAlign = 'center';
-    ctx.fillText(iconFor(p.category), x, y);
+
+  if (!single) {
+    const LocateControl = L.Control.extend({
+      options: { position: 'bottomright' },
+      onAdd() {
+        const btn = L.DomUtil.create('button', 'leaflet-bar th-locate');
+        btn.type = 'button';
+        btn.innerHTML = '◎';
+        btn.title = 'Center on my location';
+        btn.setAttribute('aria-label', 'Center on my location');
+        L.DomEvent.disableClickPropagation(btn);
+        L.DomEvent.on(btn, 'click', () => {
+          if (!navigator.geolocation) { toast('Location is not available in this browser'); return; }
+          btn.classList.add('busy');
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              btn.classList.remove('busy');
+              const here = [pos.coords.latitude, pos.coords.longitude];
+              map.setView(here, Math.max(map.getZoom(), 11));
+              L.circleMarker(here, { radius: 7, color: '#ff5a1f', fillColor: '#ff5a1f', fillOpacity: .9, weight: 2 })
+                .addTo(map)
+                .bindPopup('You are here — this dot is drawn on your device and is never sent to THRILLHUNT or shown to other hunters.');
+            },
+            () => { btn.classList.remove('busy'); toast('Could not get your location'); },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 },
+          );
+        });
+        return btn;
+      },
+    });
+    map.addControl(new LocateControl());
   }
-  canvas.onclick = (e) => {
-    const r = canvas.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    let best = null, bd = 26;
-    for (const s of spots) { const d = Math.hypot(s.x - mx, s.y - my); if (d < bd) { bd = d; best = s; } }
-    if (best) onPick(best.p);
-  };
+
+  // Leaflet sizes itself against the container at init time; in an SPA the
+  // container's final layout often isn't settled until a tick later.
+  setTimeout(() => map.invalidateSize(), 60);
+  return map;
 }
 
 // ========================================================== LOCATION DETAIL
 route(/^\/l\/([\w-]+)$/, async (slug) => {
   const d = await api.get(`/api/locations/${slug}?${coordQuery()}`);
-  const L = d.location;
+  const loc = d.location;
   const wrap = el('div', { class: 'stack' });
 
   wrap.append(el('div', { style: 'margin-top:16px' }, [
-    sourceChip(L.data_source, L.is_demo),
-    el('h1', { style: 'font-size:2rem;margin:10px 0 4px', text: L.name }),
-    el('p', { style: 'color:var(--ash);margin:0 0 6px', text: L.tagline || '' }),
+    sourceChip(loc.data_source, loc.is_demo),
+    el('h1', { style: 'font-size:2rem;margin:10px 0 4px', text: loc.name }),
+    el('p', { style: 'color:var(--ash);margin:0 0 6px', text: loc.tagline || '' }),
     el('div', { class: 'row wrap' }, [
-      el('span', { class: 'chip', text: `★ ${L.rating_avg || '—'} (${L.rating_count})` }),
-      L.distance_label ? el('span', { class: 'chip', text: L.distance_label }) : null,
-      el('span', { class: 'chip', text: L.price_text }),
+      el('span', { class: 'chip', text: `★ ${loc.rating_avg || '—'} (${loc.rating_count})` }),
+      loc.distance_label ? el('span', { class: 'chip', text: loc.distance_label }) : null,
+      el('span', { class: 'chip', text: loc.price_text }),
     ]),
   ]));
 
-  if (L.access_policy === 'private_closed') {
+  wrap.append(el('div', { class: 'address-line' }, [
+    el('span', { class: 'pin', text: '📍' }),
+    el('span', { class: 'grow', text: loc.address_display }),
+    el('button', {
+      class: 'btn btn-ghost btn-sm', style: 'padding:4px 10px;font-size:.75rem',
+      text: 'Copy', 'aria-label': 'Copy address',
+      onclick: async () => { await copy(loc.address_display); toast('Address copied', 'good'); },
+    }),
+  ]));
+
+  if (loc.access_policy === 'private_closed') {
     wrap.append(el('div', { class: 'warning' }, [
       el('strong', { text: '⛔ CLOSED PROPERTY — ENTRY IS NOT PERMITTED' }),
       el('p', { style: 'margin:0', text: 'This listing exists for awareness only. THRILLHUNT will not help anyone enter restricted property. Try the Paranormal category for legal, guided alternatives.' }),
@@ -467,38 +559,55 @@ route(/^\/l\/([\w-]+)$/, async (slug) => {
   // primary actions
   const actions = el('div', { class: 'stack', style: 'margin-top:6px' });
   actions.append(el('button', { class: 'btn btn-primary btn-block', text: '📍  NAVIGATE', onclick: () => navigateSheet(d.destination) }));
-  if (L.access_policy !== 'private_closed') {
+  if (loc.access_policy !== 'private_closed') {
     actions.append(el('div', { class: 'row' }, [
-      el('button', { class: 'btn btn-ghost grow', text: "I'M GOING", onclick: () => goingSheet(L) }),
-      el('button', { class: 'btn btn-ghost grow', text: 'JOIN GROUP', onclick: () => createGroupSheet(L) }),
+      el('button', { class: 'btn btn-ghost grow', text: "I'M GOING", onclick: () => goingSheet(loc) }),
+      el('button', { class: 'btn btn-ghost grow', text: 'JOIN GROUP', onclick: () => createGroupSheet(loc) }),
     ]));
     actions.append(el('div', { class: 'row' }, [
       d.chat ? el('button', { class: 'btn btn-ghost grow', text: `CHAT · ${d.chat.members}`, onclick: () => go(`#/chat/${d.chat.id}`) }) : null,
       el('button', { class: 'btn btn-ghost grow', text: d.saved ? '★ SAVED' : '☆ SAVE', onclick: async (e) => { const r = await api.post(`/api/locations/${slug}/save`); toast(r.saved ? 'Saved' : 'Removed'); e.target.textContent = r.saved ? '★ SAVED' : '☆ SAVE'; } }),
-      el('button', { class: 'btn btn-ghost grow', text: 'SHARE', onclick: () => shareSheet({ headline: L.name, subline: L.tagline || '', url: `${location.origin}/l/${L.slug}`, tagline: 'CHASE THE THRILL. RESPECT THE RISK.' }) }),
+      el('button', { class: 'btn btn-ghost grow', text: 'SHARE', onclick: () => shareSheet({ headline: loc.name, subline: loc.tagline || '', url: `${location.origin}/l/${loc.slug}`, tagline: 'CHASE THE THRILL. RESPECT THE RISK.' }) }),
     ]));
   }
   wrap.append(actions);
 
-  wrap.append(sectionHead('Thrill metrics'));
-  wrap.append(el('div', { class: 'card' }, [meters(L)]));
+  if (d.destination.lat != null) {
+    const miniDiv = el('div', { style: 'height:100%;width:100%' });
+    wrap.append(el('div', { class: 'minimap' }, [miniDiv]));
+    if (d.destination.approximate) {
+      wrap.append(el('p', { style: 'margin:6px 0 0;font-size:.78rem;color:var(--smoke)', text: '📍 pin is approximate — ' + d.destination.note }));
+    }
+    requestAnimationFrame(() => {
+      initLeafletMap(miniDiv, {
+        pins: [{ lat: d.destination.lat, lng: d.destination.lng, name: loc.name, category: loc.categories?.[0], slug: loc.slug, approximate: d.destination.approximate }],
+        single: true, zoom: 13,
+      });
+    });
+  }
 
-  if (L.description) {
+  wrap.append(sectionHead('Thrill metrics'));
+  wrap.append(el('div', { class: 'card' }, [meters(loc)]));
+
+  if (loc.description) {
     wrap.append(sectionHead('About'));
-    wrap.append(el('div', { class: 'card' }, [el('p', { style: 'margin:0', text: L.description })]));
+    wrap.append(el('div', { class: 'card' }, [el('p', { style: 'margin:0', text: loc.description })]));
   }
 
   wrap.append(sectionHead('Know before you go'));
+  wrap.append(credibilityLine(d.credibility));
   wrap.append(safetyPlacard(d.safety));
+  const bygBlock = beforeYouGo(d.safety);
+  if (bygBlock) wrap.append(bygBlock);
   wrap.append(el('div', { class: 'card flat' }, [
     el('dl', { style: 'margin:0;display:grid;gap:10px' }, [
-      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'HOURS' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: L.hours_display })]),
-      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'PRICE' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: L.price_text })]),
-      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'LOCATION' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: L.address_display })]),
+      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'HOURS' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: loc.hours_display })]),
+      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'PRICE' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: loc.price_text })]),
+      el('div', {}, [el('dt', { style: 'font-size:.72rem;color:var(--smoke)', text: 'LOCATION' }), el('dd', { style: 'margin:2px 0 0;font-size:.9rem', text: loc.address_display })]),
     ]),
     el('div', { class: 'row wrap', style: 'margin-top:12px' }, [
-      L.website_url ? el('a', { class: 'btn btn-ghost btn-sm', href: L.website_url, target: '_blank', rel: 'noopener', text: 'Official website' }) : null,
-      L.reservation_url ? el('a', { class: 'btn btn-ghost btn-sm', href: L.reservation_url, target: '_blank', rel: 'noopener', text: 'Reservations' }) : null,
+      loc.website_url ? el('a', { class: 'btn btn-ghost btn-sm', href: loc.website_url, target: '_blank', rel: 'noopener', text: 'Official website' }) : null,
+      loc.reservation_url ? el('a', { class: 'btn btn-ghost btn-sm', href: loc.reservation_url, target: '_blank', rel: 'noopener', text: 'Reservations' }) : null,
       el('button', { class: 'btn btn-danger btn-sm', text: '⚠︎ Report safety issue', onclick: () => safetyReportSheet(slug) }),
     ]),
   ]));
@@ -522,7 +631,7 @@ route(/^\/l\/([\w-]+)$/, async (slug) => {
               el('span', { style: 'font-size:1.4rem', text: p.avatar_emoji || '🎯' }),
               el('div', { class: 'grow' }, [el('strong', { text: '@' + p.username }), el('div', { class: 'meta', text: `Level ${p.level} — ${p.level_title}` })]),
             ])),
-            el('button', { class: 'btn btn-primary btn-block', text: 'CREATE GROUP', onclick: () => createGroupSheet(L, g.going_date) }),
+            el('button', { class: 'btn btn-primary btn-block', text: 'CREATE GROUP', onclick: () => createGroupSheet(loc, g.going_date) }),
           ]));
         },
       }, [
@@ -627,8 +736,17 @@ function goingSheet(L) {
         class: 'btn btn-primary btn-block', text: "I'M GOING",
         onclick: async () => {
           try {
-            await api.post(`/api/locations/${L.slug}/attendance`, { status: 'going', going_date: date.value, visibility: publicToggle.checked ? 'public' : 'private' });
-            close(true); toast('Locked in. +20 XP', 'good'); render();
+            const r = await api.post(`/api/locations/${L.slug}/attendance`, { status: 'going', going_date: date.value, visibility: publicToggle.checked ? 'public' : 'private' });
+            close(true); toast('Locked in. +20 XP', 'good');
+            if (r.suggest_checkin) {
+              const yes = await sheet(r.checkin_prompt.title, (c) => el('div', { class: 'stack' }, [
+                el('p', { style: 'color:var(--ash)', text: r.checkin_prompt.body }),
+                el('button', { class: 'btn btn-primary btn-block', text: 'Set a check-in', onclick: () => c(true) }),
+                el('button', { class: 'btn btn-ghost btn-block', text: 'Not this time', onclick: () => c(false) }),
+              ]));
+              if (yes) { go('#/trip'); return; }
+            }
+            render();
           } catch (e) { handleError(e); }
         },
       }),
@@ -1119,7 +1237,8 @@ route(/^\/profile$/, async () => {
     ]),
     el('div', { class: 'statgrid' }, [
       ['adventures', 'Adventures'], ['haunted', 'Haunted attractions'], ['camping', 'Camping trips'],
-      ['night', 'Night adventures'], ['thrill_reports', 'Thrill Reports'], ['groups', 'Groups'],
+      ['night', 'Night adventures'], ['biking', 'Rides'], ['sightings', 'Sighting sites'],
+      ['thrill_reports', 'Thrill Reports'], ['groups', 'Groups'],
     ].map(([k, label]) => el('div', { class: 'stat' }, [
       el('div', { class: 'n', text: String(me.stats[k] ?? 0) }), el('div', { class: 'l', text: label }),
     ]))),

@@ -179,6 +179,89 @@ async function main() {
     const review = await free.post('/api/uploads/image', img, { 'content-type': 'image/jpeg', 'x-filename': 'borderline-review.jpg' });
     check('Moderation REVIEW verdict quarantines the image', review.status === 201 && review.data.status === 'review');
 
+    // ---- subject coverage: bike trails, cryptids, UFO sites ---------------
+    {
+      const bikes = await free.get('/api/search?q=bike%20trails');
+      check('Search finds bike trails', bikes.data.results.some((r: any) => r.slug.includes('rail-trail') || r.slug.includes('singletrack')),
+            JSON.stringify(bikes.data.interpreted));
+      check('Bike search is interpreted as the bike category', bikes.data.interpreted.categories.includes('bike-trails'));
+
+      const bf = await free.get('/api/search?q=bigfoot%20sasquatch%20sightings');
+      check('Search finds Bigfoot/cryptid sites', bf.data.results.some((r: any) => r.slug.includes('cryptid')));
+      check('Sasquatch search is interpreted as the cryptid category', bf.data.interpreted.categories.includes('cryptids'));
+
+      const ufo = await free.get('/api/search?q=ufo%20sighting%20hotspots');
+      check('Search finds UFO sky-watch sites', ufo.data.results.some((r: any) => r.slug.includes('sky-watch')));
+
+      const cryptid = await free.get('/api/locations/cutler-bend-cryptid-corridor');
+      check('Cryptid site is labelled community reported, not verified', cryptid.data.location.data_source === 'community');
+      const kbyg = JSON.stringify(cryptid.data.safety.know_before_you_go);
+      check('Cryptid site states no sighting has been verified', /never been verified|unverified claim/i.test(kbyg));
+      check('Cryptid site warns off the neighbouring private land', /private land|do not cross/i.test(kbyg));
+
+      const sky = await free.get('/api/locations/route-12-sky-watch-pullout');
+      check('UFO site names the mundane explanations', /aircraft|satellite/i.test(JSON.stringify(sky.data.safety.know_before_you_go)));
+
+      // A fresh account, so this pack does not eat the free daily AI quota the
+      // later grounding tests rely on.
+      const planner = new Client();
+      await planner.post('/api/auth/register', { email: 'planner@test.dev', password: 'LongEnoughPass1', username: 'planner', age_confirmed: true, accept_tos: true });
+      const pack = await planner.post('/api/ai/find-my-thrill', { prompt: 'bigfoot country and somewhere to bike, within 150 miles', lat: 41.2565, lng: -95.9345 });
+      const roles = pack.data.pack.stops.map((s: any) => s.role);
+      check('AI pack can build a ride + stakeout run', roles.includes('Ride') || roles.includes('Stakeout'), roles.join(','));
+      check('AI never promises a sighting',
+            !/you will see|guaranteed sighting|definitely see/i.test(JSON.stringify(pack.data.pack)));
+      if (roles.includes('Stakeout')) {
+        check('AI flags sighting sites as unverified', pack.data.pack.unverified_notes.some((n: string) => /no sighting there has been verified/i.test(n)));
+      }
+    }
+
+    // ---- credibility + pre-departure safety --------------------------------
+    {
+      const verified = await free.get('/api/locations/hollow-creek-haunted-woods');
+      check('Verified listing states when it was last confirmed', /Confirmed with the operator/i.test(verified.data.credibility.statement));
+      check('Facts from a verified listing are attributed to the operator',
+            verified.data.safety.know_before_you_go.some((f: any) => f.known && /operator or property/i.test(f.attribution)));
+      check('Unknown facts carry no attribution at all',
+            verified.data.safety.know_before_you_go.filter((f: any) => !f.known).every((f: any) => f.attribution === null));
+      check('Listing reports how much it actually knows',
+            verified.data.credibility.fields_total > 0 && verified.data.credibility.fields_known <= verified.data.credibility.fields_total);
+
+      const community = await free.get('/api/locations/elkhorn-ridge-singletrack-loop');
+      check('Community listing says so plainly', /has not been independently confirmed/i.test(community.data.credibility.statement));
+      check('Community-reported facts are labelled unconfirmed',
+            community.data.safety.know_before_you_go.some((f: any) => f.known && /not independently confirmed/i.test(f.attribution)));
+
+      const remote = await free.get('/api/locations/cutler-bend-cryptid-corridor');
+      const pd = remote.data.safety.pre_departure.join(' ');
+      check('Remote site tells you to expect no signal', /lose phone signal|will not have any/i.test(pd));
+      check('Remote site tells you not to go alone', /at least one other person/i.test(pd));
+      check('Dark site tells you to bring real light', /headlamp/i.test(pd));
+      check('Missing emergency access is stated as a gap', /no confirmed emergency access/i.test(pd));
+      check('Remote site recommends a trip check-in', remote.data.safety.recommend_checkin === true);
+      check('Check-in copy still disclaims emergency monitoring', /not an emergency service/i.test(remote.data.safety.checkin_note));
+
+      const urban = await free.get('/api/locations/ironwood-scream-park');
+      check('A staffed, well-covered site is not spammed with remote warnings',
+            urban.data.safety.recommend_checkin === false, JSON.stringify(urban.data.safety.pre_departure));
+
+      const going = await free.post('/api/locations/cutler-bend-cryptid-corridor/attendance', { status: 'going', going_date: '2026-11-07' });
+      check('Committing to a remote night prompts a check-in there and then', going.data.suggest_checkin === true);
+      check('Check-in prompt does not promise anyone is watching', /cannot send help/i.test(going.data.checkin_prompt.body));
+    }
+
+    // ---- anti-trespass coordination ----------------------------------------
+    {
+      const plan = await free.post(`/api/chats/${chatId}/messages`, { body: 'we can just hop the fence once security leaves at 11' });
+      check('A message coordinating a way in is held for review', plan.status === 201 && plan.data.message.pending === true,
+            JSON.stringify(plan.data).slice(0, 120));
+      const held = await free.get(`/api/chats/${chatId}/messages`);
+      const mine2 = held.data.messages.find((m: any) => m.id === plan.data.message.id);
+      check('Held message is not published to the chat', !mine2 || mine2.pending === true);
+      const ok2 = await free.post(`/api/chats/${chatId}/messages`, { body: 'gate opens at 7, tickets are timed so do not be late' });
+      check('Ordinary logistics talk is not caught by the trespass filter', ok2.data.message.pending === false);
+    }
+
     // signed url must be viewer-bound
     const other = new Client();
     const otherReg = await other.post('/api/auth/register', { email: 'peeker@test.dev', password: 'LongEnoughPass1', username: 'peeker', age_confirmed: true, accept_tos: true });

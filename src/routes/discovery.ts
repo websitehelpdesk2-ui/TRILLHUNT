@@ -154,6 +154,9 @@ route('GET', '/api/search', ({ ctx, query }) => {
     'halloween-events': /halloween/,
     'outdoor-adventures': /adrenaline|outdoor|zip|climb/,
     'remote-adventures': /remote|isolated/,
+    'bike-trails': /bike|biking|cycl|mtb|singletrack|rail ?trail/,
+    cryptids: /bigfoot|sasquatch|cryptid|skunk ape|dogman/,
+    'ufo-sightings': /ufo|uap|alien|flying saucer|sky ?watch/,
     'hidden-gems': /hidden|weird|unusual/,
   };
   const cats = Object.entries(catHints).filter(([, re]) => re.test(q)).map(([c]) => c);
@@ -208,6 +211,12 @@ route('GET', '/api/map', ({ ctx, query }) => {
       rating_avg: r.rating_avg, fear: r.fear,
       distance_label: r.miles == null ? null : coarseDistance(r.miles),
       safety_level: r.safety_level,
+      // Street address only where precision is exact — an approximate listing
+      // gets the town, never a door someone could turn up at uninvited.
+      address_short: r.address_precision === 'exact' && r.address_line
+        ? [r.address_line, r.city, r.region].filter(Boolean).join(', ')
+        : [r.city, r.region].filter(Boolean).join(', ') || null,
+      approximate: r.address_precision !== 'exact' || !r.address_line,
     })),
     center: o.lat != null ? { lat: o.lat, lng: o.lng } : null,
   };
@@ -229,12 +238,114 @@ route('GET', '/api/locations/:slug', ({ ctx, params, query }) => {
     ['weather', 'Weather considerations'], ['seasonal', 'Seasonal closures'], ['night_access', 'Nighttime access'],
     ['operator', 'Official operator'],
   ];
-  const know_before_you_go = SAFETY_FIELDS.map(([key, label]) => ({
+  // Subject-specific facts that only make sense for some kinds of place. These
+  // are appended when present rather than added to the core list, so a haunted
+  // house does not render six "Information unavailable" rows about tyre choice.
+  const EXTRA_SAFETY_LABELS: Record<string, string> = {
+    evidence_status: 'What is actually known',
+    surface: 'Trail surface',
+    trail_status: 'Trail status',
+    difficulty_note: 'Difficulty',
+    gear: 'Gear riders carry',
+    water: 'Water',
+    wildlife: 'Wildlife',
+    hunting: 'Hunting season',
+    parking: 'Parking',
+    road_safety: 'Roadside safety',
+  };
+  const core = SAFETY_FIELDS.map(([key, label]) => ({
     key, label,
     value: safety[key] ?? null,
     known: safety[key] != null,
     display: safety[key] ?? UNKNOWN_INFO,
   }));
+  const coreKeys = new Set(SAFETY_FIELDS.map(([k]) => k));
+  const extras = Object.keys(safety)
+    .filter((k) => !coreKeys.has(k) && safety[k] != null)
+    .map((k) => ({
+      key: k,
+      label: EXTRA_SAFETY_LABELS[k] ?? k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()),
+      value: safety[k], known: true, display: safety[k],
+    }));
+  // Where a listing exists because of reported sightings, the honest framing
+  // leads — before anyone reads a single thrill metric.
+  const evidence = extras.filter((e) => e.key === 'evidence_status');
+  const fields = [...evidence, ...core, ...extras.filter((e) => e.key !== 'evidence_status')];
+
+  // ---- provenance (§10/§11) ------------------------------------------------
+  // Every known fact carries where it came from. A fact with no attribution is
+  // worth less than no fact at all, because the reader assumes we checked it.
+  const ATTRIBUTION: Record<string, string> = {
+    verified: 'Confirmed with the operator or property',
+    community: 'Reported by hunters — not independently confirmed',
+    restricted: 'Public record — access is not permitted',
+  };
+  const know_before_you_go = fields.map((f) => ({
+    ...f,
+    source: f.known ? (/community report|hunters report|riders report/i.test(String(f.value)) ? 'community' : r.data_source) : null,
+    attribution: f.known
+      ? (/community report|hunters report|riders report/i.test(String(f.value))
+          ? ATTRIBUTION.community
+          : ATTRIBUTION[r.data_source] ?? ATTRIBUTION.community)
+      : null,
+  }));
+
+  const verifiedAgeDays = r.verified_at
+    ? Math.floor((Date.now() - new Date(r.verified_at).getTime()) / 86_400_000)
+    : null;
+  const STALE_AFTER_DAYS = 180;
+  const openFlags = get<any>(
+    `SELECT COUNT(*) c FROM safety_reports WHERE location_id = ? AND status IN ('open','reviewing')`, [r.id])?.c ?? 0;
+  const knownCount = know_before_you_go.filter((f) => f.known).length;
+
+  const credibility = {
+    data_source: r.data_source,
+    verification_status: r.verification_status,
+    verified_at: r.verified_at,
+    verified_age_days: verifiedAgeDays,
+    stale: verifiedAgeDays != null && verifiedAgeDays > STALE_AFTER_DAYS,
+    fields_known: knownCount,
+    fields_total: know_before_you_go.length,
+    open_safety_flags: openFlags,
+    statement: (() => {
+      if (r.data_source === 'restricted') return 'Listed from public record. Access is not permitted and none of this is an invitation to visit.';
+      if (r.data_source === 'community') return 'Everything here was reported by hunters and has not been independently confirmed. Verify before you drive.';
+      if (verifiedAgeDays == null) return 'This listing has not been through verification yet. Treat it as unconfirmed.';
+      if (verifiedAgeDays > STALE_AFTER_DAYS) return `Last confirmed with the operator ${Math.floor(verifiedAgeDays / 30)} months ago. Hours and prices drift — check the official source.`;
+      return `Confirmed with the operator ${verifiedAgeDays === 0 ? 'today' : `${verifiedAgeDays} day${verifiedAgeDays === 1 ? '' : 's'} ago`}.`;
+    })(),
+    flag_note: openFlags >= 2
+      ? `${openFlags} hunters have flagged a problem with this listing. Our safety team is reviewing it.`
+      : null,
+  };
+
+  // ---- pre-departure signals (§12) -----------------------------------------
+  // Derived only from data we actually hold. Nothing here is invented, and an
+  // unknown is itself a signal worth stating out loud.
+  const cellField = safety.cell_service ? String(safety.cell_service) : null;
+  const noSignal = cellField != null && /no (?:cell )?(?:service|signal)|none|drops|patchy|intermittent|one bar/i.test(cellField);
+  const cellUnknown = cellField == null;
+  const isolated = (r.isolation ?? 0) >= 7;
+  const veryDark = (r.darkness ?? 0) >= 8;
+  const hard = (r.difficulty ?? 0) >= 7;
+  const emergencyUnknown = safety.emergency_access == null;
+
+  // A staffed, ticketed venue with a verified operator has someone on site who
+  // can call for help. Firing wilderness warnings there trains people to skip
+  // the block entirely, which is how the warnings stop working where they matter.
+  const staffed = ['ticketed', 'guided', 'reservation'].includes(r.access_policy) && r.data_source === 'verified';
+
+  const pre_departure: string[] = [];
+  if (noSignal) pre_departure.push('Expect to lose phone signal. Download your map and share your plan before you leave the car.');
+  else if (cellUnknown && !staffed) pre_departure.push('We do not know what cell coverage is like here. Plan as though you will not have any.');
+  if (isolated) pre_departure.push('This is a remote site. Go with at least one other person and agree on a turnaround time.');
+  if (veryDark && !staffed) pre_departure.push('There is no ambient light. Bring a headlamp plus a backup, not a phone torch.');
+  if (hard) pre_departure.push('Community difficulty rating is high. Check the terrain notes before committing a group to it.');
+  if (emergencyUnknown && !staffed) pre_departure.push('We have no confirmed emergency access route for this location. Know how you would get someone out.');
+  if (r.safety_level === 'elevated' || r.safety_level === 'high') {
+    pre_departure.push('This site carries a raised safety rating. Read the hazards above before you decide.');
+  }
+  const recommend_checkin = !staffed && (isolated || noSignal || r.safety_level === 'high');
 
   const chat = get<any>('SELECT id FROM chats WHERE location_id = ?', [r.id]);
   const members = chat ? get<any>('SELECT COUNT(*) c FROM chat_members WHERE chat_id = ? AND state != ?', [chat.id, 'left'])?.c ?? 0 : 0;
@@ -273,7 +384,13 @@ route('GET', '/api/locations/:slug', ({ ctx, params, query }) => {
       access_policy: r.access_policy,
       access_note: accessNote(r.access_policy),
       warning: THRILL_WARNING,
+      pre_departure,
+      recommend_checkin,
+      checkin_note: recommend_checkin
+        ? 'Consider setting a trip check-in and telling someone offline where you are going. THRILLHUNT does not monitor check-ins and is not an emergency service.'
+        : null,
     },
+    credibility,
     events: all<any>(`SELECT id, title, description, starts_at, ends_at, price_text, ticket_url, data_source, is_demo
                         FROM events WHERE location_id = ? AND deleted_at IS NULL AND starts_at > ? ORDER BY starts_at LIMIT 10`, [r.id, now()]),
     reviews: all<any>(`SELECT rv.id, rv.rating, rv.body, rv.created_at, p.username, p.avatar_emoji
@@ -308,7 +425,7 @@ function accessNote(policy: string) {
 route('POST', '/api/locations/:slug/attendance', async ({ req, ctx, params }) => {
   const u = requireWrite(ctx);
   const b = await readJson(req);
-  const loc = get<any>('SELECT id, name, access_policy FROM locations WHERE slug = ? AND deleted_at IS NULL', [params.slug]);
+  const loc = get<any>('SELECT id, name, access_policy, data_source, isolation, safety_level, safety_json FROM locations WHERE slug = ? AND deleted_at IS NULL', [params.slug]);
   if (!loc) throw notFound();
   if (loc.access_policy === 'private_closed') {
     throw bad('This location is private or closed. THRILLHUNT does not support planning visits to restricted property.', 'restricted_location');
@@ -329,7 +446,25 @@ route('POST', '/api/locations/:slug/attendance', async ({ req, ctx, params }) =>
     awardXp(u.id, 'first_adventure', undefined, 'first_adventure');
     checkBadges(u.id);
   }
-  return { ok: true, status, going_date: date };
+  // Safety prompt at the moment it is actually useful: when someone commits to
+  // a date, not buried on a settings screen they will never open.
+  let sj: any = {};
+  try { sj = loc.safety_json ? JSON.parse(loc.safety_json) : {}; } catch { sj = {}; }
+  const staffedVenue = ['ticketed', 'guided', 'reservation'].includes(loc.access_policy) && loc.data_source === 'verified';
+  const thin = sj.cell_service != null && /no (?:cell )?(?:service|signal)|none|drops|patchy|intermittent|one bar/i.test(String(sj.cell_service));
+  const suggest_checkin = status === 'going' && !staffedVenue
+    && ((loc.isolation ?? 0) >= 7 || thin || loc.safety_level === 'high');
+
+  return {
+    ok: true, status, going_date: date,
+    suggest_checkin,
+    checkin_prompt: suggest_checkin
+      ? {
+          title: 'Set a trip check-in?',
+          body: `${loc.name} is remote or has thin phone coverage. Tell someone offline where you are going, and set a check-in so you have a due-back time. THRILLHUNT does not monitor check-ins and cannot send help.`,
+        }
+      : null,
+  };
 });
 
 route('GET', '/api/locations/:slug/going', ({ ctx, params, query }) => {

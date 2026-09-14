@@ -93,7 +93,11 @@ export function safetyPlacard(safety) {
     el('p', { style: 'margin:0 0 12px;font-size:.86rem;color:var(--ash)', text: safety.access_note }),
     el('dl', {}, safety.know_before_you_go.flatMap((f) => [
       el('dt', { text: f.label.toUpperCase() }),
-      el('dd', { class: f.known ? '' : 'unknown', text: f.display }),
+      el('dd', { class: f.known ? '' : 'unknown' }, [
+        f.display,
+        // Provenance sits with the fact, not in a footnote nobody reads.
+        f.attribution ? el('div', { class: 'attrib', text: f.attribution }) : null,
+      ]),
     ])),
   ]);
 }
@@ -102,6 +106,32 @@ export function thrillWarning(lines) {
   return el('div', { class: 'warning' }, [
     el('strong', { text: '⚠️ THRILL WARNING' }),
     ...lines.map((l) => el('p', { style: 'margin:0 0 8px', text: l })),
+  ]);
+}
+
+export function credibilityLine(cred) {
+  const tone = cred.data_source === 'verified' && !cred.stale ? 'verified'
+    : cred.data_source === 'restricted' ? 'restricted' : 'community';
+  return el('div', { class: 'card flat tight' }, [
+    el('div', { class: 'row between wrap' }, [
+      el('span', { class: `chip ${tone}`, text: cred.stale ? '⏳ Needs re-checking' : tone === 'verified' ? '✅ Confirmed' : '👥 Unconfirmed' }),
+      el('small', { text: `${cred.fields_known} of ${cred.fields_total} facts on file` }),
+    ]),
+    el('p', { style: 'margin:8px 0 0;font-size:.86rem;color:var(--ash)', text: cred.statement }),
+    cred.flag_note ? el('p', { style: 'margin:8px 0 0;font-size:.86rem;color:#f0a7a8', text: cred.flag_note }) : null,
+  ]);
+}
+
+export function beforeYouGo(safety) {
+  if (!safety.pre_departure.length) return null;
+  return el('div', { class: 'card', style: 'border-color:#4a4a57' }, [
+    el('h3', { style: 'margin-bottom:10px', text: 'Before you go' }),
+    el('div', { class: 'stack' }, safety.pre_departure.map((line) =>
+      el('div', { class: 'row', style: 'align-items:flex-start;gap:9px' }, [
+        el('span', { style: 'color:var(--ember)', text: '▸' }),
+        el('span', { style: 'font-size:.9rem', text: line }),
+      ]))),
+    safety.checkin_note ? el('p', { style: 'margin:12px 0 0;font-size:.82rem;color:var(--ash)', text: safety.checkin_note }) : null,
   ]);
 }
 

@@ -89,6 +89,12 @@ export function userStats(userId: string) {
     road_trips: q(`SELECT COUNT(*) c FROM attendance a JOIN location_categories lc ON lc.location_id = a.location_id
               JOIN categories c2 ON c2.id = lc.category_id
               WHERE a.user_id = ? AND a.status='completed' AND c2.slug = 'road-trips'`),
+    biking: q(`SELECT COUNT(*) c FROM attendance a JOIN location_categories lc ON lc.location_id = a.location_id
+              JOIN categories c2 ON c2.id = lc.category_id
+              WHERE a.user_id = ? AND a.status='completed' AND c2.slug = 'bike-trails'`),
+    sightings: q(`SELECT COUNT(*) c FROM attendance a JOIN location_categories lc ON lc.location_id = a.location_id
+              JOIN categories c2 ON c2.id = lc.category_id
+              WHERE a.user_id = ? AND a.status='completed' AND c2.slug IN ('cryptids','ufo-sightings')`),
     groups: q('SELECT COUNT(*) c FROM group_members WHERE user_id = ? AND left_at IS NULL'),
     checkins: q(`SELECT COUNT(*) c FROM trips WHERE user_id = ? AND checkin_outcome = 'home'`),
   };

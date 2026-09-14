@@ -57,6 +57,9 @@ function parseIntent(prompt: string) {
     [/remote|isolat|middle of nowhere|off.?grid/, 'remote-adventures'],
     [/halloween|october/, 'halloween-events'],
     [/adrenaline|zip|climb|extreme|rappel/, 'outdoor-adventures'],
+    [/bike|biking|cycl|mtb|singletrack|gravel ride|rail.?trail/, 'bike-trails'],
+    [/bigfoot|sasquatch|cryptid|skunk ape|dogman|wendigo/, 'cryptids'],
+    [/ufo|uap|alien|flying saucer|sky ?watch|lights in the sky/, 'ufo-sightings'],
     [/hidden|weird|unusual|odd/, 'hidden-gems'],
   ];
   for (const [re, slug] of map) if (re.test(p)) cats.push(slug);
@@ -102,17 +105,28 @@ function buildPack(prompt: string, pool: any[], intent: ReturnType<typeof parseI
   const camp = pool.filter((r) => r.cats.includes('camping')).sort((a, b) => (b.isolation ?? 0) - (a.isolation ?? 0))[0];
   const night = pool.filter((r) => r.cats.includes('night-adventures') || r.cats.includes('hiking'))
     .sort((a, b) => (a.difficulty ?? 9) - (b.difficulty ?? 9))[0];
+  const ride = pool.filter((r) => r.cats.includes('bike-trails'))
+    .sort((a, b) => (b.rating_avg ?? 0) - (a.rating_avg ?? 0))[0];
+  // Cryptid and sky-watching sites are picked on darkness and isolation: those
+  // are the only things about them we can actually measure.
+  const stakeout = pool.filter((r) => r.cats.includes('cryptids') || r.cats.includes('ufo-sightings'))
+    .sort((a, b) => ((b.darkness ?? 0) + (b.isolation ?? 0)) - ((a.darkness ?? 0) + (a.isolation ?? 0)))[0];
 
   const stops: PackStop[] = [];
   if (scare) stops.push(stopFrom(scare, 'Main event', intent.intensity === 'extreme' ? 'Highest community fear rating in your radius.' : 'Strong fear rating with verified operator info.'));
   if (camp && (intent.wantsCamp || intent.cats.includes('camping'))) stops.push(stopFrom(camp, 'Basecamp', 'High isolation score for the after-party quiet.'));
-  if (night) stops.push(stopFrom(night, 'Night leg', 'Manageable difficulty after dark with a group.'));
+  if (ride && intent.cats.includes('bike-trails')) stops.push(stopFrom(ride, 'Ride', 'Best-rated ride in your radius. Check the surface note before you load the bike.'));
+  if (stakeout && (intent.cats.includes('cryptids') || intent.cats.includes('ufo-sightings'))) {
+    stops.push(stopFrom(stakeout, 'Stakeout', 'Darkest, most isolated site in range — which is all we can honestly promise.'));
+  }
+  if (night && stops.length < 3) stops.push(stopFrom(night, 'Night leg', 'Manageable difficulty after dark with a group.'));
 
   const notes: string[] = [];
   for (const s of stops) {
     if (s.data_source !== 'verified') notes.push(`${s.name} is community-reported — confirm details before you commit.`);
     if (s.reservation_required) notes.push(`${s.name} requires a reservation or permit. Book it first.`);
     if (s.hours.includes('unavailable')) notes.push(`Hours for ${s.name} are not in our data. Check the official source.`);
+    if (s.role === 'Stakeout') notes.push(`${s.name} is listed for its reported sightings. No sighting there has been verified. Plan it as a dark, isolated night out, not as a guarantee.`);
   }
 
   const itinerary = stops.length

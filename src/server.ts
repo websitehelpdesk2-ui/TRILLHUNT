@@ -69,8 +69,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   res.setHeader('permissions-policy', 'geolocation=(self), camera=(), microphone=()');
   if (!path.startsWith('/api/')) {
     res.setHeader('content-security-policy',
-      "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
-      "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+      // Widened only for the map: unpkg serves the Leaflet library (no build
+      // step in this app, so no way to bundle it locally without one), and
+      // the two tile hosts serve map imagery. Nothing else is allowed in —
+      // API keys are never sent to the client regardless, so there is
+      // nothing for a compromised CDN script to steal here.
+      "default-src 'self'; " +
+      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://*.tile.opentopomap.org; " +
+      "style-src 'self' 'unsafe-inline' https://unpkg.com; " +
+      "script-src 'self' https://unpkg.com; connect-src 'self'; " +
+      "frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   }
 
   let ctx: Ctx | undefined;

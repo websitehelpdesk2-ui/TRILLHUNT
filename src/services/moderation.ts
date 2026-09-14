@@ -60,12 +60,26 @@ export const imageModerator: ImageModerator =
 // ------------------------------------------------------------------- text
 const SLUR_OR_THREAT = /\b(kill yourself|kys)\b/i;
 // §3/§44 — we do not host how-to content for getting into places illegally.
-const ILLEGAL_HOWTO = /\b(cut the (?:lock|fence)|bypass the (?:alarm|security|gate)|how to break in|pick the lock|ignore the no.?trespass)/i;
+const ILLEGAL_HOWTO = /\b(cut the (?:lock|fence|chain)|bypass the (?:alarm|security|gate)|how to break in|pick the lock|ignore the no.?trespass)/i;
+// §3/§44 — coordinating a way into somewhere you are not allowed to be is the
+// single most likely way this product gets someone arrested, hurt or killed.
+// These are the phrasings that actually appear when people plan it, and they
+// are held for a human rather than published and cleaned up afterwards.
+const TRESPASS_PLAN = new RegExp([
+  'hop (?:the|that) fence', 'jump (?:the|that) fence', 'climb the fence',
+  'back way in', 'around the gate', 'through the hole in the fence',
+  'sneak (?:in|past|onto)', 'slip past security',
+  'security (?:leaves|goes home|clocks out)', 'no ?one checks (?:after|at night)',
+  'guard (?:leaves|is gone)', 'cameras? (?:are|is) (?:fake|off|broken)',
+  'park down the road and walk in', 'nobody will know',
+  'before they lock (?:it|the gate)', 'ignore the (?:posted )?signs?',
+].join('|'), 'i');
 const SPAM = /(https?:\/\/\S+){4,}|\b(free crypto|onlyfans|telegram\s*@)/i;
 
 export function moderateText(body: string): ModResult {
   if (SLUR_OR_THREAT.test(body)) return { verdict: 'block', provider: 'rules', labels: ['harassment_threat'], score: 0.95 };
   if (ILLEGAL_HOWTO.test(body)) return { verdict: 'review', provider: 'rules', labels: ['illegal_access_instructions'], score: 0.7 };
+  if (TRESPASS_PLAN.test(body)) return { verdict: 'review', provider: 'rules', labels: ['trespass_facilitation'], score: 0.75 };
   if (SPAM.test(body)) return { verdict: 'review', provider: 'rules', labels: ['spam'], score: 0.6 };
   return { verdict: 'approve', provider: 'rules', labels: [], score: 0 };
 }
