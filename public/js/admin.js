@@ -210,6 +210,71 @@ function manageUser(u) {
   });
 }
 
+
+// -------------------------------------------------- submitted locations
+views.submissions = async () => {
+  const d = await api.get('/api/admin/locations/pending');
+  const head = el('div', { class: 'stack' }, [
+    label('Submitted locations'),
+    el('div', { class: 'card', style: 'border-color:#5b2526' }, [
+      el('strong', { text: 'Before you approve' }),
+      el('ul', { style: 'margin:8px 0 0;padding-left:18px;font-size:.88rem;color:var(--ash)' },
+        d.review_guidance.map((g) => el('li', { text: g }))),
+    ]),
+  ]);
+  if (!d.pending.length) {
+    head.append(empty('📍', 'No submissions waiting', 'Everything users have sent in has been reviewed.'));
+    return head;
+  }
+  for (const p of d.pending) {
+    let attest = {};
+    try { attest = JSON.parse(p.attestation ?? '{}'); } catch { /* shown as missing below */ }
+    head.append(el('div', { class: 'card' }, [
+      el('div', { class: 'row between wrap' }, [
+        el('div', { class: 'grow' }, [
+          el('strong', { text: p.name }),
+          el('div', { class: 'meta', text: [p.address_line, p.city, p.region].filter(Boolean).join(', ') }),
+        ]),
+        el('span', { class: 'chip community', text: p.access_policy }),
+      ]),
+      el('p', { style: 'margin:10px 0;font-size:.9rem', text: p.description }),
+      p.lore ? el('p', { style: 'margin:0 0 10px;font-size:.86rem;color:var(--ash)', text: p.lore }) : null,
+      el('div', { class: 'card flat tight', style: 'margin-bottom:10px' }, [
+        el('div', { style: 'font-size:.78rem;color:var(--smoke)', text: 'SUBMITTER ATTESTATION' }),
+        el('div', { style: 'font-size:.85rem' , text: attest.access_attestation
+          ? `@${p.submitter} affirmed lawful access as "${attest.access_policy}" on ${fmtDate(attest.attested_at)}.`
+          : 'No attestation on record — treat with suspicion.' }),
+      ]),
+      el('div', { class: 'row wrap' }, [
+        el('a', { class: 'btn btn-ghost btn-sm', target: '_blank', rel: 'noopener',
+          href: `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`, text: '🗺️ Check the location' }),
+        p.website_url ? el('a', { class: 'btn btn-ghost btn-sm', href: p.website_url, target: '_blank', rel: 'noopener', text: 'Website' }) : null,
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Approve as community', onclick: () => reviewSubmission(p, 'approve') }),
+        el('button', { class: 'btn btn-danger btn-sm', text: 'Reject', onclick: () => reviewSubmission(p, 'reject') }),
+      ]),
+    ]));
+  }
+  return head;
+};
+
+function reviewSubmission(p, decision) {
+  return sheet(`${decision === 'approve' ? 'Approve' : 'Reject'} — ${p.name}`, (close) => {
+    const reason = el('textarea', { placeholder: decision === 'reject' ? 'Why? This is sent to the submitter.' : 'Optional note' });
+    return el('div', {}, [
+      decision === 'approve' ? el('p', { style: 'font-size:.88rem;color:var(--ash)', text: 'This publishes the listing as COMMUNITY REPORTED. It stays unverified until someone confirms access with the operator.' }) : null,
+      el('div', { class: 'field' }, [el('label', { text: 'Reason' }), reason]),
+      el('button', {
+        class: `btn ${decision === 'approve' ? 'btn-primary' : 'btn-danger'} btn-block`,
+        text: decision === 'approve' ? 'Publish as community reported' : 'Reject submission',
+        onclick: async () => {
+          try { await api.post(`/api/admin/locations/${p.id}/review`, { decision, reason: reason.value }); close(); toast('Recorded', 'good'); show('submissions'); }
+          catch (e) { toast(e.message, 'bad'); }
+        },
+      }),
+    ]);
+  });
+}
+
 // ---------------------------------------------------------------- locations
 views.locations = async () => {
   const d = await api.get('/api/admin/locations');

@@ -34,5 +34,33 @@ check('No street address means approximate precision', noAddr.address_precision 
 const trail = mapFacility({ ...sample, FacilityName: 'Cedar Bluff Trailhead', FacilityTypeDescr: 'Facility', Reservable: false });
 check('Trailheads map to hiking and stay open-access', trail.categories.includes('hiking') && trail.access_policy === 'open');
 
-console.log(`\n  ${pass} passed, ${fail} failed\n`);
-process.exit(fail ? 1 : 0);
+console.log(`\n  ${pass} passed, ${fail} failed (facility mapping)`);
+if (fail) process.exit(1);
+
+// ---- RecAreas normalise into the same shape ---------------------------------
+const { mapRecArea } = await import(new URL('../scripts/import-recreation-gov.ts', import.meta.url).href);
+const area = mapRecArea({
+  RecAreaID: '1105', RecAreaName: 'Cedar Wilderness Area',
+  RecAreaDescription: '<p>Backcountry area with primitive sites.</p>',
+  RecAreaLatitude: 44.12, RecAreaLongitude: -110.44,
+  RecAreaPhone: '307-555-0144', RecAreaDirectionsURL: 'https://example.gov/cedar',
+  RECAREAADDRESS: [{ City: 'Cody', AddressStateCode: 'WY' }],
+  ACTIVITY: [{ ActivityName: 'HIKING' }, { ActivityName: 'CAMPING' }],
+});
+let p2 = 0, f2 = 0;
+const c2 = (n, ok, note = '') => { ok ? (p2++, console.log('  ✅', n)) : (f2++, console.log('  ❌', n, note)); };
+c2('RecArea maps into a location record', !!area);
+c2('RecArea ids are namespaced so they cannot collide with facility ids', area.external_id === 'rec-1105');
+c2('RIDB activity tags drive categories', area.categories.includes('hiking') && area.categories.includes('camping'));
+c2('Wilderness naming adds the remote category', area.categories.includes('remote-adventures'));
+c2('RecArea without a street address is marked approximate', area.address_precision === 'approximate');
+c2('RecAreas are not marked reservable', area.access_policy === 'open' && area.reservation_url === null);
+
+const biking = mapRecArea({
+  RecAreaID: '7', RecAreaName: 'Ridge Loop', RecAreaLatitude: 40, RecAreaLongitude: -100,
+  ACTIVITY: [{ ActivityName: 'BIKING' }], RECAREAADDRESS: [],
+});
+c2('Biking activity maps to the bike-trails category', biking.categories.includes('bike-trails'));
+
+console.log(`\n  ${p2} passed, ${f2} failed (RecArea mapping)\n`);
+process.exit(f2 ? 1 : 0);

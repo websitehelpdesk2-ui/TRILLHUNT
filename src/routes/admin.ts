@@ -191,6 +191,68 @@ route('GET', '/api/admin/locations', ({ ctx, query }) => {
       ORDER BY created_at DESC LIMIT 200`) };
 });
 
+
+/** Locations awaiting first review — the user-submission queue. */
+route('GET', '/api/admin/locations/pending', ({ ctx }) => {
+  requireRole(ctx, 'admin', 'moderator');
+  const rows = all<any>(`SELECT l.*, p.username AS submitter
+                         FROM locations l LEFT JOIN profiles p ON p.user_id = l.submitted_by
+                         WHERE l.moderation_status = 'pending' AND l.deleted_at IS NULL
+                         ORDER BY l.created_at ASC LIMIT 100`);
+  return {
+    pending: rows.map((r) => ({
+      id: r.id, slug: r.slug, name: r.name, description: r.description, lore: r.lore,
+      city: r.city, region: r.region, address_line: r.address_line, lat: r.lat, lng: r.lng,
+      access_policy: r.access_policy, website_url: r.website_url, submitter: r.submitter,
+      created_at: r.created_at,
+      // Surfaced so a reviewer sees the attestation they are relying on.
+      attestation: get<any>(`SELECT meta_json FROM audit_logs
+                             WHERE subject = ? AND action = 'location.submitted'
+                             ORDER BY created_at DESC LIMIT 1`, [r.id])?.meta_json ?? null,
+    })),
+    review_guidance: [
+      'Confirm the place exists and that public access is lawful before approving.',
+      'Reject anything on closed, private or restricted property — no exceptions for "everyone goes there".',
+      'Approving publishes it as COMMUNITY REPORTED. Only mark it verified after confirming with the operator.',
+    ],
+  };
+});
+
+/** Approve or reject a submitted location. */
+route('POST', '/api/admin/locations/:id/review', async ({ req, ctx, params }) => {
+  const u = requireRole(ctx, 'admin', 'moderator');
+  const b = await readJson(req);
+  const decision = oneOf(b.decision, 'Decision', ['approve', 'reject']);
+  const reason = str(b.reason, 'Reason', { max: 500, required: false });
+  const loc = get<any>('SELECT * FROM locations WHERE id = ?', [params.id]);
+  if (!loc) throw notFound();
+
+  if (decision === 'approve') {
+    run(`UPDATE locations SET moderation_status = 'approved', updated_at = ? WHERE id = ?`, [now(), loc.id]);
+    if (loc.submitted_by) {
+      notify(loc.submitted_by, 'location_approved', 'Your location is live',
+        `${loc.name} is now on the map, labelled community reported until it is verified.`,
+        `/app#/l/${loc.slug}`);
+    }
+  } else {
+    run(`UPDATE locations SET moderation_status = 'blocked', deleted_at = ?, updated_at = ? WHERE id = ?`,
+      [now(), now(), loc.id]);
+    if (loc.submitted_by) {
+      notify(loc.submitted_by, 'location_rejected', 'Your submission was not published',
+        reason || 'It did not meet the listing guidelines. You can appeal from Settings.',
+        '/app#/settings');
+    }
+  }
+
+  // 'actioned' and 'dismissed' are the schema's vocabulary — there is no
+  // 'closed' status, and inventing one fails the CHECK constraint.
+  run(`UPDATE moderation_cases SET status = ?, resolved_at = ?, updated_at = ?
+       WHERE subject_id = ? AND status IN ('open','in_review')`,
+    [decision === 'approve' ? 'dismissed' : 'actioned', now(), now(), loc.id]);
+  audit(u, `location.${decision}`, loc.id, { reason: reason || null });
+  return { ok: true, decision };
+});
+
 route('POST', '/api/admin/locations/:id/verify', async ({ req, ctx, params }) => {
   const u = requireRole(ctx, 'admin', 'moderator');
   const b = await readJson(req);

@@ -234,6 +234,14 @@ async function main() {
   await goTo('#/search/bike%20trails', 900);
   check('Searching bike trails returns rides', /Rail Trail|Singletrack/i.test(text()));
 
+  await goTo('#/explore', 900);
+  check('Explore offers a way to add a place', /Add a place/i.test(text()));
+  check('Explore exposes a verified-only filter', /Verified only/i.test(text()) && /Community reported/i.test(text()));
+
+  await goTo('#/explore?source=community', 900);
+  check('Community filter warns that access and legality are unconfirmed',
+        /Access, safety and legality are unconfirmed/i.test(text()));
+
   await goTo('#/map', 900);
   check('Map states that hunters are never plotted', w.document.body.textContent.includes('hunters are never plotted'));
   check('Map uses the real Leaflet layer, not a canvas placeholder', w.__leafletMaps.length >= 1);

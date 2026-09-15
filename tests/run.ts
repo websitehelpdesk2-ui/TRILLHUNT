@@ -400,6 +400,80 @@ async function main() {
     const modConfig = await mod.get('/api/admin/config');
     check('Moderator role cannot edit business configuration', modConfig.status === 403);
 
+    // ---- user-submitted locations ------------------------------------------
+    {
+      const base = {
+        name: 'Fallow Mill Night Walk', description: 'A riverside mill path that locals walk after dark. Gravel, well used, open access.',
+        city: 'Ashland', region: 'NE', lat: 41.04, lng: -96.37, access_policy: 'open',
+        categories: ['night-adventures', 'hiking'],
+        access_attestation: true, accuracy_attestation: true,
+      };
+
+      const noAttest = await free.post('/api/locations', { ...base, access_attestation: false });
+      check('Submission without the access attestation is refused', noAttest.status === 400 && noAttest.data.code === 'access_attestation_required');
+
+      const noAccuracy = await free.post('/api/locations', { ...base, accuracy_attestation: false });
+      check('Submission without the accuracy attestation is refused', noAccuracy.status === 400);
+
+      const closed = await free.post('/api/locations', { ...base, access_policy: 'private_closed' });
+      check('Users cannot list closed or private property at all', closed.status === 400, JSON.stringify(closed.data).slice(0, 90));
+
+      const trespass = await free.post('/api/locations', {
+        ...base, name: 'The Old Dennett Asylum',
+        description: 'Fence is down on the north side, security leaves at 11 so nobody will know. Park down the road and walk in.',
+      });
+      check('A submission that coordinates trespassing is refused outright',
+            trespass.status === 400 && trespass.data.code === 'trespass_refused', JSON.stringify(trespass.data).slice(0, 120));
+
+      const ok = await free.post('/api/locations', base);
+      check('A lawful submission is accepted', ok.status === 200 && ok.data.status === 'pending_review', JSON.stringify(ok.data).slice(0, 120));
+      check('Submitter is told a human reviews it', /human checks every new location/i.test(ok.data.message));
+      check('Submitter is told it will not be published as verified', /never published as verified/i.test(ok.data.notice));
+
+      const hidden = await free.get('/api/explore?within=3000&page=0');
+      const pages2 = await Promise.all([1, 2, 3].map((n) => free.get(`/api/explore?within=3000&page=${n}`)));
+      const everywhere = [...hidden.data.results, ...pages2.flatMap((p) => p.data.results)];
+      check('A pending submission is not visible to anyone until approved',
+            !everywhere.some((r: any) => r.name === 'Fallow Mill Night Walk'));
+
+      // staff review
+      const queue = await admin.get('/api/admin/locations/pending');
+      check('Staff can open the submission queue', queue.status === 200 && Array.isArray(queue.data.pending),
+            `status ${queue.status}: ${JSON.stringify(queue.data).slice(0, 120)}`);
+      const mine = (queue.data.pending ?? []).find((p: any) => p.id === ok.data.location_id);
+      check('Submission lands in the staff review queue', !!mine);
+      check('Reviewer can see the attestation that was given', !!mine && /access_attestation/.test(mine.attestation ?? ''));
+      check('Review guidance tells staff to reject closed property', queue.data.review_guidance.some((g: string) => /closed, private or restricted/i.test(g)));
+
+      const modQueue = await mod.get('/api/admin/locations/pending');
+      check('Moderators can work the submission queue too', modQueue.status === 200);
+
+      const approved = await admin.post(`/api/admin/locations/${ok.data.location_id}/review`, { decision: 'approve' });
+      check('Staff can approve a submission', approved.status === 200,
+            `status ${approved.status}: ${JSON.stringify(approved.data).slice(0, 140)}`);
+
+      const live = await free.get('/api/explore?within=3000&source=community');
+      check('Approved submission appears, filtered as community', live.data.results.some((r: any) => r.name === 'Fallow Mill Night Walk'));
+
+      const verifiedOnly = await free.get('/api/explore?within=3000&source=verified');
+      check('Verified-only filter excludes community submissions',
+            !verifiedOnly.data.results.some((r: any) => r.name === 'Fallow Mill Night Walk'));
+      check('Verified-only filter still returns verified places', verifiedOnly.data.results.length > 0);
+
+      const detail = await free.get(`/api/locations/${(await free.get('/api/explore?within=3000&source=community')).data.results.find((r: any) => r.name === 'Fallow Mill Night Walk').slug}`);
+      const warn = detail.data.safety.unverified_access_warning;
+      check('Unverified listing carries an access-and-legality warning', !!warn);
+      check('Warning states THRILLHUNT has not confirmed access', warn.body.some((l: string) => /has not verified that public access is permitted/i.test(l)));
+      check('Warning states trespassing is a crime and listing is not permission',
+            warn.body.some((l: string) => /trespassing/i.test(l) && /not permission/i.test(l)));
+      check('Warning tells the user to confirm with the owner first',
+            warn.body.some((l: string) => /confirm access with the owner or operator/i.test(l)));
+
+      const verifiedDetail = await free.get('/api/locations/hollow-creek-haunted-woods');
+      check('A verified listing does not carry the unverified warning',
+            verifiedDetail.data.safety.unverified_access_warning === null);
+    }
+
     // =============================== 14. CANCELLATION -> ENTITLEMENT LOSS
     const cancel = await free.post('/api/pro/cancel');
     check('Cancel keeps access until period end', cancel.status === 200 && cancel.data.subscription.is_pro === true);

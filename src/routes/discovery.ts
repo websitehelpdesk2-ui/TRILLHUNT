@@ -2,12 +2,12 @@ import { route } from './registry.ts';
 import { all, get, run, cfg } from '../lib/db.ts';
 import { requireUser, requireWrite } from '../lib/auth.ts';
 import { milesBetween, coarseDistance, normLat, normLng, rateLimit } from '../lib/guard.ts';
-import { id, now, readJson, str, int, oneOf, notFound, bad, clamp } from '../lib/util.ts';
+import { id, now, readJson, str, int, oneOf, notFound, bad, clamp, slugify } from '../lib/util.ts';
 import { locationCard, destinationFor, publicUser, SAFETY_LABELS, UNKNOWN_INFO, THRILL_WARNING } from '../lib/view.ts';
 import { has } from '../services/entitlements.ts';
 import { personalRecommendations } from '../services/ai.ts';
 import { awardXp, checkBadges } from '../services/xp.ts';
-import { openCase } from '../services/moderation.ts';
+import { openCase, moderateText } from '../services/moderation.ts';
 import { notify } from '../services/notifications.ts';
 
 const LOC_SELECT = `SELECT l.*, (SELECT group_concat(c.slug) FROM location_categories lc JOIN categories c ON c.id = lc.category_id WHERE lc.location_id = l.id) AS cat_slugs
@@ -96,6 +96,9 @@ route('GET', '/api/explore', ({ ctx, query }) => {
   const minFear = Number(query.get('min_fear') ?? 0);
   const maxDifficulty = Number(query.get('max_difficulty') ?? 10);
   const verifiedOnly = query.get('verified') === 'true';
+  // Explicit provenance filter. Someone planning a night out with strangers
+  // should be able to say "only places we have actually confirmed" in one tap.
+  const sourceFilter = oneOf(query.get('source') ?? 'all', 'Source', ['all', 'verified', 'community']);
   const openNow = query.get('open_now') === 'true';
   const maxPrice = query.get('max_price') ? Number(query.get('max_price')) : null;
 
@@ -107,7 +110,8 @@ route('GET', '/api/explore', ({ ctx, query }) => {
   if (cat) rows = rows.filter((r) => String(r.cat_slugs ?? '').split(',').includes(cat));
   rows = rows.filter((r) => r.miles == null || r.miles <= maxMiles);
   if (minRating) rows = rows.filter((r) => r.rating_avg >= minRating);
-  if (verifiedOnly) rows = rows.filter((r) => r.data_source === 'verified');
+  if (verifiedOnly || sourceFilter === 'verified') rows = rows.filter((r) => r.data_source === 'verified');
+  if (sourceFilter === 'community') rows = rows.filter((r) => r.data_source === 'community');
   if (openNow) rows = rows.filter((r) => !!r.hours_json);
   if (advancedAllowed) {
     if (minFear) rows = rows.filter((r) => (r.fear ?? 0) >= minFear);
@@ -248,6 +252,105 @@ route('GET', '/api/map', ({ ctx, query }) => {
     center: o.lat != null ? { lat: o.lat, lng: o.lng } : null,
     total: rows.length,
     bbox_search: hasBbox,
+  };
+});
+
+
+/**
+ * §  User-submitted locations.
+ *
+ * This is the riskiest write path in the product. Someone can put an address
+ * on a map and other people will drive there at 2am on the strength of it, so
+ * the rules are deliberately tight:
+ *
+ *   - Nothing goes live on submission. Everything queues for a human.
+ *   - Submissions are always `community` provenance and `unverified` status.
+ *     Only staff can promote a listing to verified.
+ *   - Users cannot create `private_closed` listings at all. Abandoned asylums
+ *     and closed property are exactly what people want to submit and exactly
+ *     what we will not host on a user's say-so.
+ *   - The submitter must affirm, explicitly, that the place is lawfully
+ *     accessible. That attestation is stored with their user id and timestamp.
+ *   - Text is scanned for trespass-coordination language before it is accepted.
+ *   - Safety fields are never taken from the submitter. They stay NULL and the
+ *     listing renders "Information unavailable" until staff confirm otherwise.
+ */
+route('POST', '/api/locations', async ({ req, ctx }) => {
+  const u = requireWrite(ctx);
+  rateLimit(`submit_location:${u.id}`, 5, 86400);
+  const b = await readJson(req);
+
+  const name = str(b.name, 'Name', { min: 3, max: 120 });
+  const description = str(b.description, 'Description', { min: 20, max: 2000 });
+  const city = str(b.city, 'City', { max: 80 });
+  const region = str(b.region, 'State', { max: 40 });
+  const addressLine = str(b.address_line, 'Address', { max: 200, required: false });
+  const lat = normLat(b.lat), lng = normLng(b.lng);
+  if (lat == null || lng == null) throw bad('A location on the map is required.', 'coords_required');
+
+  // Users may only submit places that are lawfully visitable.
+  const access = oneOf(b.access_policy, 'Access', ['open', 'ticketed', 'reservation', 'permit', 'guided']);
+
+  if (b.access_attestation !== true) {
+    throw bad(
+      'You must confirm this location is open to the public, or that you have the owner\'s permission to list it.',
+      'access_attestation_required',
+    );
+  }
+  if (b.accuracy_attestation !== true) {
+    throw bad('You must confirm the information you are submitting is accurate to the best of your knowledge.', 'accuracy_attestation_required');
+  }
+
+  const combined = `${name}\n${description}\n${b.lore ?? ''}`;
+  const verdict = moderateText(combined);
+  if (verdict.verdict === 'block') {
+    throw bad('This submission cannot be accepted. Review the Community Guidelines.', 'content_blocked');
+  }
+  if (verdict.labels.includes('trespass_facilitation') || verdict.labels.includes('illegal_access_instructions')) {
+    throw bad(
+      'THRILLHUNT does not list locations that require entering property without permission, and will not publish directions for doing so.',
+      'trespass_refused',
+    );
+  }
+
+  const cats: string[] = Array.isArray(b.categories) ? b.categories.slice(0, 4).map(String) : [];
+  const locId = id('loc');
+  const ts = now();
+  const slug = `${slugify(name)}-${locId.slice(-6)}`;
+
+  run(`INSERT INTO locations (id, slug, name, description, lore, data_source, verification_status, is_demo,
+        access_policy, address_line, city, region, country, lat, lng, address_precision,
+        website_url, price_text, submitted_by, moderation_status, created_at, updated_at)
+       VALUES (?,?,?,?,?, 'community', 'unverified', 0, ?,?,?,?, 'US', ?,?,?,?,?,?, 'pending', ?,?)`,
+    [locId, slug, name, description, str(b.lore, 'Story', { max: 2000, required: false }) || null,
+     access, addressLine || null, city, region, lat, lng, addressLine ? 'exact' : 'approximate',
+     str(b.website_url, 'Website', { max: 300, required: false }) || null,
+     str(b.price_text, 'Price', { max: 120, required: false }) || null,
+     u.id, ts, ts]);
+
+  for (const slugName of cats) {
+    const cat = get<any>('SELECT id FROM categories WHERE slug = ?', [slugName]);
+    if (cat) run('INSERT OR IGNORE INTO location_categories (location_id, category_id) VALUES (?,?)', [locId, cat.id]);
+  }
+
+  // The attestation is evidence. Keep it with the record, not just in a log line.
+  run(`INSERT INTO audit_logs (id, actor_id, actor_role, action, subject, meta_json, created_at)
+       VALUES (?,?,?,?,?,?,?)`,
+    [id('aud'), u.id, u.role, 'location.submitted', locId,
+     JSON.stringify({ access_attestation: true, accuracy_attestation: true, access_policy: access, attested_at: ts }), ts]);
+
+  openCase({
+    subjectType: 'location', subjectId: locId, ownerUserId: u.id,
+    origin: 'auto_moderation', severity: 'normal',
+    notes: 'New community location awaiting first review',
+  });
+
+  return {
+    ok: true,
+    status: 'pending_review',
+    location_id: locId,
+    message: 'Submitted for review. A human checks every new location before it appears — usually within a day.',
+    notice: 'Community submissions are never published as verified. Until someone confirms access and conditions, it will be labelled unverified.',
   };
 });
 
@@ -414,6 +517,20 @@ route('GET', '/api/locations/:slug', ({ ctx, params, query }) => {
       access_policy: r.access_policy,
       access_note: accessNote(r.access_policy),
       warning: THRILL_WARNING,
+      // Shown on anything we have not confirmed ourselves. A community listing
+      // is one person's claim that a place exists and can be visited — it is
+      // not evidence that access is lawful, and the consequences of assuming
+      // otherwise land on the user, not on us.
+      unverified_access_warning: r.data_source === 'verified' ? null : {
+        title: 'ACCESS AND LEGALITY NOT VERIFIED',
+        body: [
+          'This listing was submitted by a THRILLHUNT user and has not been confirmed with the property owner or operator.',
+          'THRILLHUNT has not verified that public access is permitted, that the location is safe, or that the information here is accurate.',
+          'Entering private property without permission is trespassing. It is a crime in every US state, and being listed here is not permission.',
+          'Before you go: confirm access with the owner or operator, obey posted signs and closures, and leave if anyone asks you to.',
+        ],
+        report_prompt: 'If this place is closed, private, or unsafe, report it — that is how it gets corrected.',
+      },
       pre_departure,
       recommend_checkin,
       checkin_note: recommend_checkin

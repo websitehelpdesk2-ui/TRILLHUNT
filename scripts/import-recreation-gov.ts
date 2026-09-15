@@ -20,6 +20,7 @@
  *   --limit=N        stop after N imported facilities (default 500)
  *   --dry-run        show what would be written, touch nothing
  *   --all            no state filter
+ *   --facilities-only  skip RecAreas (parks/forests/refuges); facilities only
  *
  * WHAT THIS DELIBERATELY DOES NOT DO
  * ----------------------------------
@@ -45,6 +46,7 @@ const DRY = has('dry-run');
 const LIMIT = Number(flag('limit') ?? 500);
 const STATES = (flag('state') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
 const ALL = has('all');
+const SKIP_RECAREAS = has('facilities-only');
 
 /** Guards live in main(), not at module scope, so mapFacility stays importable by tests. */
 function checkArgs() {
@@ -85,13 +87,20 @@ async function ridb(path: string, params: Record<string, string | number>) {
   return res.json();
 }
 
-/** Facilities are paginated 50 at a time; RECDATA holds the page. */
-async function* facilities() {
+/**
+ * Pages through a RIDB collection. Both /facilities and /recareas share the
+ * same envelope, so one generator covers both.
+ *
+ * Facilities are the specific things — a campground, a trailhead, a boat ramp.
+ * RecAreas are the containers — a national forest, a refuge, a park. Importing
+ * both is what turns a thin map into a dense one, which is the whole point.
+ */
+async function* collection(path: '/facilities' | '/recareas') {
   const states = ALL ? [''] : STATES;
   for (const state of states) {
     let offset = 0;
     for (;;) {
-      const page: any = await ridb('/facilities', {
+      const page: any = await ridb(path, {
         limit: 50, offset, full: 'true', ...(state ? { state } : {}),
       });
       const rows: any[] = page?.RECDATA ?? [];
@@ -105,15 +114,39 @@ async function* facilities() {
 }
 
 // ---------------------------------------------------------------- mapping
-/** Which THRILLHUNT categories a RIDB facility type maps onto. */
-function categoriesFor(f: any): string[] {
-  const type = String(f.FacilityTypeDescr ?? '').toLowerCase();
-  const name = String(f.FacilityName ?? '').toLowerCase();
+/**
+ * Which THRILLHUNT categories a RIDB record maps onto.
+ *
+ * RIDB tags each record with its own ACTIVITY list, which is far more reliable
+ * than guessing from the name — so that comes first, and name matching is only
+ * the fallback. Nothing here invents a haunted or paranormal tag: RIDB is a
+ * recreation database and has no opinion on ghosts.
+ */
+const ACTIVITY_MAP: Array<[RegExp, string]> = [
+  [/camping|campsite/i, 'camping'],
+  [/hiking|trail/i, 'hiking'],
+  [/biking|bicycl|cycling/i, 'bike-trails'],
+  [/wildlife|scenic|photograph/i, 'outdoor-adventures'],
+  [/climbing|caving|rappel/i, 'outdoor-adventures'],
+  [/boating|paddl|kayak|canoe|raft/i, 'outdoor-adventures'],
+  [/astronom|star|night sky/i, 'night-adventures'],
+];
+
+function categoriesFor(rec: any): string[] {
   const cats: string[] = [];
-  if (type.includes('campground') || name.includes('campground') || name.includes('camp')) cats.push('camping');
-  if (name.includes('trail') || name.includes('trailhead')) cats.push('hiking');
-  if (type.includes('facility') && !cats.length) cats.push('outdoor-adventures');
-  if (name.includes('wilderness') || name.includes('backcountry') || name.includes('primitive')) cats.push('remote-adventures');
+  const activities: string[] = (rec.ACTIVITY ?? []).map((a: any) => String(a.ActivityName ?? ''));
+  for (const activity of activities) {
+    for (const [pattern, slug] of ACTIVITY_MAP) if (pattern.test(activity)) cats.push(slug);
+  }
+
+  const name = String(rec.FacilityName ?? rec.RecAreaName ?? '').toLowerCase();
+  const type = String(rec.FacilityTypeDescr ?? '').toLowerCase();
+  if (/campground|camp\b/.test(name) || type.includes('campground')) cats.push('camping');
+  if (/trail|trailhead/.test(name)) cats.push('hiking');
+  if (/wilderness|backcountry|primitive|remote/.test(name)) cats.push('remote-adventures');
+  if (/observator|dark sky|stargaz/.test(name)) cats.push('night-adventures');
+  if (/cave|cavern/.test(name)) cats.push('hidden-gems');
+
   if (!cats.length) cats.push('outdoor-adventures');
   return [...new Set(cats)];
 }
@@ -158,6 +191,23 @@ export function mapFacility(f: any) {
     price_text: null,          // RIDB fees live on a separate endpoint and vary by site
     categories: categoriesFor(f),
   };
+}
+
+/** RecAreas use different field names for the same things. Normalise, then reuse. */
+export function mapRecArea(r: any) {
+  return mapFacility({
+    FacilityID: `rec-${r.RecAreaID}`,
+    FacilityName: r.RecAreaName,
+    FacilityDescription: r.RecAreaDescription,
+    FacilityTypeDescr: 'Recreation Area',
+    FacilityLatitude: r.RecAreaLatitude,
+    FacilityLongitude: r.RecAreaLongitude,
+    FacilityPhone: r.RecAreaPhone,
+    FacilityDirectionsURL: r.RecAreaDirectionsURL,
+    Reservable: false,
+    FACILITYADDRESS: r.RECAREAADDRESS,
+    ACTIVITY: r.ACTIVITY,
+  });
 }
 
 // ---------------------------------------------------------------- writing
@@ -208,22 +258,29 @@ async function main() {
 
   console.log(`\n  Importing from RIDB${STATES.length ? ` — ${STATES.join(', ')}` : ' — all states'}${DRY ? '  [DRY RUN]' : ''}\n`);
 
-  for await (const f of facilities()) {
-    if (seen >= LIMIT) break;
-    const rec = mapFacility(f);
-    if (!rec) { counts.skipped++; continue; }
-    seen++;
+  const sources: Array<['/facilities' | '/recareas', (row: any) => ReturnType<typeof mapFacility>]> =
+    SKIP_RECAREAS ? [['/facilities', mapFacility]]
+                  : [['/facilities', mapFacility], ['/recareas', mapRecArea]];
 
-    if (DRY) {
-      console.log(`  + ${rec.name}  (${[rec.city, rec.region].filter(Boolean).join(', ') || 'no address'})  [${rec.categories.join(', ')}]`);
-      counts.inserted++;
-      continue;
-    }
-    try {
-      counts[upsert(rec) as 'inserted' | 'updated' | 'skipped']++;
-    } catch (e) {
-      counts.skipped++;
-      console.warn(`  ! skipped ${rec.name}: ${(e as Error).message}`);
+  outer:
+  for (const [path, mapper] of sources) {
+    for await (const f of collection(path)) {
+      if (seen >= LIMIT) break outer;
+      const rec = mapper(f);
+      if (!rec) { counts.skipped++; continue; }
+      seen++;
+
+      if (DRY) {
+        console.log(`  + ${rec.name}  (${[rec.city, rec.region].filter(Boolean).join(', ') || 'no address'})  [${rec.categories.join(', ')}]`);
+        counts.inserted++;
+        continue;
+      }
+      try {
+        counts[upsert(rec) as 'inserted' | 'updated' | 'skipped']++;
+      } catch (e) {
+        counts.skipped++;
+        console.warn(`  ! skipped ${rec.name}: ${(e as Error).message}`);
+      }
     }
   }
 

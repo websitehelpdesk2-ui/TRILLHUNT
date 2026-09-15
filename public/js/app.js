@@ -269,7 +269,10 @@ route(/^\/explore(?:\?(.*))?$/, async (qs) => {
   const params = new URLSearchParams(qs || '');
   const cats = state.bootstrap.categories;
   const wrap = el('div', { class: 'stack' });
-  wrap.append(el('h2', { style: 'margin:16px 0 0', text: 'Explore' }), searchBar());
+  wrap.append(el('div', { class: 'row between', style: 'margin:16px 0 0' }, [
+    el('h2', { style: 'margin:0', text: 'Explore' }),
+    el('button', { class: 'btn btn-ghost btn-sm', text: '＋ Add a place', onclick: submitLocationSheet }),
+  ]), searchBar());
 
   const catRow = el('div', { class: 'hscroll', style: 'margin-bottom:6px' },
     [{ slug: '', name: 'Everything', icon: '✴️' }, ...cats].map((c) =>
@@ -289,6 +292,20 @@ route(/^\/explore(?:\?(.*))?$/, async (qs) => {
     el('button', { class: 'btn btn-ghost btn-sm', text: '⚙︎ Filters', onclick: () => filterSheet(params) }),
   ]));
 
+  // Provenance is a first-class filter, not buried in the advanced sheet:
+  // "only places someone has actually checked" is a safety decision.
+  const source = params.get('source') || 'all';
+  wrap.append(el('div', { class: 'row', style: 'gap:6px;margin-bottom:6px' }, [
+    ['all', 'Everything'], ['verified', '✅ Verified only'], ['community', '👥 Community reported'],
+  ].map(([k, label]) => el('button', {
+    class: 'chip', style: `padding:8px 12px;${source === k ? 'border-color:var(--ember);color:var(--ember)' : ''}`,
+    text: label,
+    onclick: () => { params.set('source', k); go(`#/explore?${params}`); },
+  }))));
+  if (source === 'community') {
+    wrap.append(el('p', { style: 'font-size:.8rem;color:var(--ash);margin:0 0 8px', text: 'Community listings are submitted by other hunters. Access, safety and legality are unconfirmed — check before you go.' }));
+  }
+
   const data = await api.get(`/api/explore?${params}&${coordQuery()}`);
   if (data.advanced_filters_locked) {
     wrap.append(el('div', { class: 'card', style: 'border-color:#4a3b86' }, [
@@ -304,6 +321,120 @@ route(/^\/explore(?:\?(.*))?$/, async (qs) => {
     : empty('🔦', 'Nothing matches yet', 'Widen the distance or clear a filter. We will not invent places to fill the list.'));
   return wrap;
 });
+
+
+/**
+ * Submit a location.
+ *
+ * The attestations are checkboxes that block submission, not fine print under
+ * a button. Someone adding an abandoned building they climbed into should hit
+ * a wall here, read why, and reconsider — that is the whole point of the
+ * screen. Nothing here lets a user set safety ratings or verification status:
+ * those are for staff, after a human has looked.
+ */
+function submitLocationSheet() {
+  return sheet('Add a place', (close) => {
+    const f = {
+      name: el('input', { maxlength: 120, placeholder: 'Fallow Mill Night Walk' }),
+      city: el('input', { maxlength: 80, placeholder: 'Ashland' }),
+      region: el('input', { maxlength: 40, placeholder: 'NE' }),
+      address: el('input', { maxlength: 200, placeholder: 'Street address, if there is one' }),
+      lat: el('input', { type: 'number', step: 'any', placeholder: '41.0400' }),
+      lng: el('input', { type: 'number', step: 'any', placeholder: '-96.3700' }),
+      description: el('textarea', { placeholder: 'What is it, what is the terrain like, what should someone expect?' }),
+      lore: el('textarea', { placeholder: 'Local legend or history, if there is any. Say what is claimed and what is documented.' }),
+      website: el('input', { maxlength: 300, placeholder: 'Official website, if it has one' }),
+    };
+    const access = el('select', {}, [
+      ['open', 'Open to the public, no booking needed'],
+      ['ticketed', 'Ticketed attraction'],
+      ['reservation', 'Reservation required'],
+      ['permit', 'Permit required'],
+      ['guided', 'Guided access only'],
+    ].map(([v, label]) => el('option', { value: v, text: label })));
+
+    const cats = el('div', { class: 'chiprow' });
+    const chosen = new Set();
+    for (const c of state.bootstrap.categories) {
+      const chip = el('button', { class: 'chip', style: 'padding:8px 12px', text: `${c.icon} ${c.name}` });
+      chip.addEventListener('click', () => {
+        if (chosen.has(c.slug)) { chosen.delete(c.slug); chip.style.borderColor = 'var(--ink-300)'; chip.style.color = 'var(--ash)'; }
+        else if (chosen.size < 4) { chosen.add(c.slug); chip.style.borderColor = 'var(--ember)'; chip.style.color = 'var(--ember)'; }
+      });
+      cats.append(chip);
+    }
+
+    const useHere = el('button', {
+      class: 'btn btn-ghost btn-sm', text: '📍 Use my current position',
+      onclick: async () => {
+        const c = await requestLocation();
+        if (c) { f.lat.value = c.lat; f.lng.value = c.lng; toast('Coordinates filled in'); }
+        else toast('Could not get your location', 'bad');
+      },
+    });
+
+    const accessAttest = el('input', { type: 'checkbox' });
+    const accuracyAttest = el('input', { type: 'checkbox' });
+    const err = el('div', { style: 'color:#f0a7a8;font-size:.85rem;min-height:1.2em' });
+
+    return el('div', { class: 'stack' }, [
+      el('div', { class: 'warning' }, [
+        el('strong', { text: '⚠️ READ THIS FIRST' }),
+        el('p', { style: 'margin:0 0 8px', text: 'Do not submit abandoned buildings, closed property, or anywhere you needed to climb a fence, ignore a sign, or avoid being seen to reach. Trespassing is a crime, and listing a place here is not permission to enter it.' }),
+        el('p', { style: 'margin:0', text: 'Places on private or closed property are rejected. Repeatedly submitting them will cost you your account.' }),
+      ]),
+      el('div', { class: 'field' }, [el('label', { text: 'Name' }), f.name]),
+      el('div', { class: 'field' }, [el('label', { text: 'What is it?' }), f.description]),
+      el('div', { class: 'field' }, [el('label', { text: 'How do people get access?' }), access]),
+      el('div', { class: 'row' }, [
+        el('div', { class: 'field grow' }, [el('label', { text: 'City' }), f.city]),
+        el('div', { class: 'field', style: 'width:90px' }, [el('label', { text: 'State' }), f.region]),
+      ]),
+      el('div', { class: 'field' }, [el('label', { text: 'Street address (optional)' }), f.address]),
+      el('div', { class: 'row' }, [
+        el('div', { class: 'field grow' }, [el('label', { text: 'Latitude' }), f.lat]),
+        el('div', { class: 'field grow' }, [el('label', { text: 'Longitude' }), f.lng]),
+      ]),
+      useHere,
+      el('div', { class: 'field' }, [el('label', { text: 'Categories (up to 4)' }), cats]),
+      el('div', { class: 'field' }, [el('label', { text: 'The story (optional)' }), f.lore]),
+      el('div', { class: 'field' }, [el('label', { text: 'Official website (optional)' }), f.website]),
+      el('label', { class: 'checkline' }, [accessAttest, el('span', { text: 'I confirm this location is open to the public, or that I have the owner\'s permission to list it. I did not have to trespass to get there.' })]),
+      el('label', { class: 'checkline' }, [accuracyAttest, el('span', { text: 'The information I am submitting is accurate to the best of my knowledge.' })]),
+      el('p', { style: 'font-size:.8rem;color:var(--ash);margin:0' , text: 'A human reviews every submission before it appears. It will be published as COMMUNITY REPORTED — unverified — until someone confirms access and conditions with the operator.' }),
+      err,
+      el('button', {
+        class: 'btn btn-primary btn-block', text: 'Submit for review',
+        onclick: async (e) => {
+          err.textContent = '';
+          if (!accessAttest.checked || !accuracyAttest.checked) {
+            err.textContent = 'Both confirmations are required before this can be submitted.';
+            return;
+          }
+          e.target.disabled = true;
+          try {
+            const r = await api.post('/api/locations', {
+              name: f.name.value, description: f.description.value, lore: f.lore.value,
+              city: f.city.value, region: f.region.value, address_line: f.address.value,
+              lat: parseFloat(f.lat.value), lng: parseFloat(f.lng.value),
+              access_policy: access.value, website_url: f.website.value,
+              categories: [...chosen],
+              access_attestation: true, accuracy_attestation: true,
+            });
+            close(true);
+            sheet('Submitted', () => el('div', { class: 'stack' }, [
+              el('p', { text: r.message }),
+              el('p', { style: 'color:var(--ash);font-size:.88rem', text: r.notice }),
+            ]));
+          } catch (ex) {
+            err.textContent = ex.message;
+            e.target.disabled = false;
+          }
+        },
+      }),
+    ]);
+  });
+}
 
 function filterSheet(params) {
   return sheet('Filters', (close) => {
@@ -670,6 +801,21 @@ route(/^\/l\/([\w-]+)$/, async (slug) => {
       onclick: async () => { await copy(loc.address_display); toast('Address copied', 'good'); },
     }),
   ]));
+
+  // Unverified listings lead with the access warning. Someone scrolling toward
+  // the NAVIGATE button should have already read it.
+  if (d.safety.unverified_access_warning) {
+    const w = d.safety.unverified_access_warning;
+    wrap.append(el('div', { class: 'warning' }, [
+      el('strong', { text: `⚠️ ${w.title}` }),
+      ...w.body.map((line) => el('p', { style: 'margin:0 0 8px', text: line })),
+      el('button', {
+        class: 'btn btn-danger btn-sm', style: 'margin-top:4px',
+        text: '⚠︎ Report this listing', onclick: () => safetyReportSheet(slug),
+      }),
+      el('p', { style: 'margin:8px 0 0;font-size:.78rem;color:var(--ash)', text: w.report_prompt }),
+    ]));
+  }
 
   if (loc.access_policy === 'private_closed') {
     wrap.append(el('div', { class: 'warning' }, [
