@@ -21,6 +21,7 @@
  *   --dry-run        show what would be written, touch nothing
  *   --all            no state filter
  *   --facilities-only  skip RecAreas (parks/forests/refuges); facilities only
+ *   --purge-museums   delete previously-imported museums/visitor centers/offices, then exit
  *
  * WHAT THIS DELIBERATELY DOES NOT DO
  * ----------------------------------
@@ -39,14 +40,15 @@ const API = 'https://ridb.recreation.gov/api/v1';
 const KEY = process.env.RIDB_API_KEY ?? '';
 
 const args = process.argv.slice(2);
-const flag = (name: string) => args.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
+const flag = (name: string) => args.find((a: string) => a.startsWith(`--${name}=`))?.split('=')[1];
 const has = (name: string) => args.includes(`--${name}`);
 
 const DRY = has('dry-run');
 const LIMIT = Number(flag('limit') ?? 500);
-const STATES = (flag('state') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+const STATES = (flag('state') ?? '').split(',').map((s: string) => s.trim().toUpperCase()).filter(Boolean);
 const ALL = has('all');
 const SKIP_RECAREAS = has('facilities-only');
+const PURGE = has('purge-museums');
 
 /** Guards live in main(), not at module scope, so mapFacility stays importable by tests. */
 function checkArgs() {
@@ -132,23 +134,46 @@ const ACTIVITY_MAP: Array<[RegExp, string]> = [
   [/astronom|star|night sky/i, 'night-adventures'],
 ];
 
-function categoriesFor(rec: any): string[] {
+/**
+ * RIDB's /facilities endpoint is not just campgrounds and trailheads — it also
+ * carries visitor centers, museums, administrative offices, gift shops and
+ * interpretive centers, because those are "facilities" too in federal-land
+ * terms. None of that is what THRILLHUNT is for, and letting the category
+ * fallback catch them (as the first version of this importer did) is how a
+ * Mission museum ends up on a thrill-seeker's map next to a haunted asylum.
+ *
+ * So this is an inclusion list, not an exclusion list: a record has to earn a
+ * THRILLHUNT category — through its activity tags or its name pattern — or it
+ * is not imported at all. "Could not categorise it" now means "skip it",
+ * never "call it outdoor-adventures and hope".
+ */
+const EXCLUDE_TYPE = /museum|visitor center|welcome center|interpretive center|nature center|headquarters|administrative|office|gift shop|store|concession|ranger station|permit office/i;
+const EXCLUDE_NAME = /\bmuseum\b|\bvisitor center\b|\bheadquarters\b|\badministration\b|\bgift shop\b/i;
+
+function categoriesFor(rec: any): string[] | null {
+  const name = String(rec.FacilityName ?? rec.RecAreaName ?? '').toLowerCase();
+  const type = String(rec.FacilityTypeDescr ?? '').toLowerCase();
+  if (EXCLUDE_TYPE.test(type) || EXCLUDE_NAME.test(name)) return null;
+
   const cats: string[] = [];
   const activities: string[] = (rec.ACTIVITY ?? []).map((a: any) => String(a.ActivityName ?? ''));
   for (const activity of activities) {
     for (const [pattern, slug] of ACTIVITY_MAP) if (pattern.test(activity)) cats.push(slug);
   }
 
-  const name = String(rec.FacilityName ?? rec.RecAreaName ?? '').toLowerCase();
-  const type = String(rec.FacilityTypeDescr ?? '').toLowerCase();
   if (/campground|camp\b/.test(name) || type.includes('campground')) cats.push('camping');
   if (/trail|trailhead/.test(name)) cats.push('hiking');
   if (/wilderness|backcountry|primitive|remote/.test(name)) cats.push('remote-adventures');
   if (/observator|dark sky|stargaz/.test(name)) cats.push('night-adventures');
   if (/cave|cavern/.test(name)) cats.push('hidden-gems');
+  // A bare RecArea/Facility type with no other signal is still recreation
+  // land — a national forest or refuge with no matched activity tag is worth
+  // keeping. What we refuse is the fallback that swallowed everything.
+  if (!cats.length && /recreation area|forest|refuge|wilderness|park|reservoir|lake/.test(name + ' ' + type)) {
+    cats.push('outdoor-adventures');
+  }
 
-  if (!cats.length) cats.push('outdoor-adventures');
-  return [...new Set(cats)];
+  return cats.length ? [...new Set(cats)] : null;
 }
 
 /**
@@ -168,6 +193,8 @@ export function mapFacility(f: any) {
   const description = raw.length > 600 ? `${raw.slice(0, 597)}…` : raw || null;
 
   const reservable = String(f.Reservable) === 'true' || f.Reservable === true;
+  const cats = categoriesFor(f);
+  if (!cats) return null;   // museums, visitor centers, offices — not a THRILLHUNT category
 
   return {
     external_source: 'ridb',
@@ -189,7 +216,7 @@ export function mapFacility(f: any) {
     phone: f.FacilityPhone || null,
     reservation_url: reservable ? `https://www.recreation.gov/camping/campgrounds/${f.FacilityID}` : null,
     price_text: null,          // RIDB fees live on a separate endpoint and vary by site
-    categories: categoriesFor(f),
+    categories: cats,
   };
 }
 
@@ -247,10 +274,35 @@ function upsert(rec: ReturnType<typeof mapFacility>) {
   return 'inserted';
 }
 
+
+/**
+ * One-time cleanup for an earlier version of this importer that fell back to
+ * `outdoor-adventures` for anything it could not categorise — which meant
+ * museums, visitor centers and administrative offices got imported as thrill
+ * destinations. This removes exactly those, and only records this importer
+ * created (external_source = 'ridb'), never a user's own submission or a hand-
+ * written listing that happens to share a name pattern.
+ */
+function purgeMuseums() {
+  ensureColumns();
+  const bad = /museum|visitor center|welcome center|interpretive center|nature center|headquarters|administrative|gift shop|concession|ranger station|permit office/i;
+  const rows = all<any>(`SELECT id, name FROM locations WHERE external_source = 'ridb' AND deleted_at IS NULL`);
+  const toRemove = rows.filter((r: any) => bad.test(r.name));
+  console.log(`\n  Found ${toRemove.length} of ${rows.length} RIDB imports matching museum/office/visitor-center patterns.\n`);
+  for (const r of toRemove) console.log(`  - ${r.name}`);
+  if (!DRY) {
+    for (const r of toRemove) run(`UPDATE locations SET deleted_at = ? WHERE id = ?`, [now(), r.id]);
+    console.log(`\n  Removed. Nothing else was touched.\n`);
+  } else {
+    console.log(`\n  [DRY RUN] Nothing deleted. Re-run without --dry-run to remove these.\n`);
+  }
+}
+
 // ---------------------------------------------------------------- main
 async function main() {
-  checkArgs();
   migrate();
+  if (PURGE) { purgeMuseums(); return; }
+  checkArgs();
   if (!DRY) ensureColumns();
 
   const counts = { inserted: 0, updated: 0, skipped: 0 };

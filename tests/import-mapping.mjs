@@ -62,5 +62,47 @@ const biking = mapRecArea({
 });
 c2('Biking activity maps to the bike-trails category', biking.categories.includes('bike-trails'));
 
-console.log(`\n  ${p2} passed, ${f2} failed (RecArea mapping)\n`);
-process.exit(f2 ? 1 : 0);
+console.log(`\n  ${p2} passed, ${f2} failed (RecArea mapping)`);
+if (f2) process.exit(1);
+
+// ---- museums, visitor centers and offices must never import ---------------
+let p3 = 0, f3 = 0;
+const c3 = (n, ok, note = '') => { ok ? (p3++, console.log('  ✅', n)) : (f3++, console.log('  ❌', n, note)); };
+
+c3('A museum facility is rejected outright', mapFacility({
+  FacilityID: '10408926', FacilityName: 'Mission San Juan Museum', FacilityTypeDescr: 'Museum',
+  FacilityLatitude: 29.35, FacilityLongitude: -98.47, FACILITYADDRESS: [], ACTIVITY: [],
+}) === null);
+
+c3('A visitor center is rejected even with an ambiguous name', mapFacility({
+  FacilityID: '2', FacilityName: 'Riverbend Welcome Center', FacilityTypeDescr: 'Visitor Center',
+  FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [],
+}) === null);
+
+c3('An administrative office is rejected', mapFacility({
+  FacilityID: '3', FacilityName: 'District Headquarters', FacilityTypeDescr: 'Administrative Office',
+  FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [],
+}) === null);
+
+c3('A gift shop is rejected', mapFacility({
+  FacilityID: '4', FacilityName: 'Park Store', FacilityTypeDescr: 'Concession / Gift Shop',
+  FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [],
+}) === null);
+
+// The bare-facility fallback should stay narrow: real recreation land keeps
+// importing, but a category-less non-recreation record does not slip through.
+c3('A named national forest with no activity tags still imports',
+  mapFacility({ FacilityID: '5', FacilityName: 'Ashford National Forest', FacilityTypeDescr: 'Facility',
+    FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [] }) !== null);
+
+c3('An unnamed, uncategorised facility does not default to outdoor-adventures',
+  mapFacility({ FacilityID: '6', FacilityName: 'Building 12', FacilityTypeDescr: 'Facility',
+    FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [] }) === null);
+
+c3('A campground with an activity tag still imports normally', mapFacility({
+  FacilityID: '7', FacilityName: 'Elm Creek Campground', FacilityTypeDescr: 'Campground',
+  FacilityLatitude: 40, FacilityLongitude: -100, FACILITYADDRESS: [], ACTIVITY: [{ ActivityName: 'CAMPING' }],
+})?.categories.includes('camping'));
+
+console.log(`\n  ${p3} passed, ${f3} failed (excluded facility types)\n`);
+if (f3) process.exit(1);

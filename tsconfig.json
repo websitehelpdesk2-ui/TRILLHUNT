@@ -1,0 +1,42 @@
+{
+  "//": [
+    "This project has no build step \u2014 Node 22 runs the TypeScript directly by",
+    "stripping types, which means nothing ever type-checks these files at",
+    "runtime. This config exists purely so the editor understands that setup",
+    "and stops reporting phantom errors.",
+    "",
+    "noEmit is therefore the point: tsc is a linter here, never a compiler.",
+    "'types': [] keeps us from requiring @types/node as a dependency \u2014 the",
+    "handful of Node globals we actually touch are declared in types/node-globals.d.ts."
+  ],
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "allowJs": true,
+    "checkJs": false,
+    "types": []
+  },
+  "include": [
+    "src",
+    "scripts",
+    "tests",
+    "types"
+  ],
+  "exclude": [
+    "node_modules",
+    "public"
+  ]
+}
